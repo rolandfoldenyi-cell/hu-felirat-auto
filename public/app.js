@@ -178,6 +178,20 @@ function setStatus(text, { loading = false, error = false } = {}) {
   els.statusText.classList.toggle("error", error);
 }
 
+// Reads a JSON API response; a non-JSON body (e.g. a Vercel 404 page) becomes a readable error.
+async function readJsonResponse(resp) {
+  const raw = await resp.text();
+  try {
+    return JSON.parse(raw);
+  } catch {
+    const snippet = raw.replace(/\s+/g, " ").trim().slice(0, 60);
+    throw new Error(
+      `A szerver nem JSON-választ adott (HTTP ${resp.status}${snippet ? `: ${snippet}` : ""}). ` +
+        "Valószínűleg nem települt az API-függvény."
+    );
+  }
+}
+
 function engineLabel(engine) {
   if (engine === "gemini") return "Gemini AI";
   if (engine === "openai") return "OpenAI GPT";
@@ -340,8 +354,9 @@ async function loadVideoFromInput(rawInput, preferredLang = "") {
       })
     });
 
-    const capData = await capResp.json();
+    const capData = await readJsonResponse(capResp);
     if (!capResp.ok) {
+      if (capData.details) console.warn("[captions] részletek:", capData.details);
       throw new Error(capData.error || "Nem sikerült letölteni a feliratot.");
     }
 
@@ -366,7 +381,11 @@ async function loadVideoFromInput(rawInput, preferredLang = "") {
       return;
     }
 
-    await translateAllProgressive(abortController.signal, capData.selectedTrack?.langName || "");
+    const sourceLabel = capData.selectedTrack?.langName || "";
+    await translateAllProgressive(
+      abortController.signal,
+      capData.source === "supadata" ? `${sourceLabel} (Supadata)` : sourceLabel
+    );
   } catch (err) {
     if (err.name === "AbortError") return;
     setStatus(err.message || "Hiba történt a felirat betöltése közben.", { error: true });
@@ -462,7 +481,7 @@ async function translateAllProgressive(signal, sourceLangName) {
       })
     });
 
-    const data = await resp.json();
+    const data = await readJsonResponse(resp);
     if (!resp.ok) {
       throw new Error(data.error || "Fordítási hiba.");
     }
