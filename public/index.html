@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0B1218" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>HU Felirat Auto</title>
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="icon" type="image/png" href="/icons/icon-192.png" />
+  <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Top Header -->
+    <header class="topbar">
+      <div class="brand">
+        <img src="/icons/icon-192.png" alt="HU" class="brand-icon" />
+        <div class="brand-text">
+          <div class="brand-title">FELIRAT AUTO</div>
+          <div class="brand-sub">MOBIL · 2.0</div>
+        </div>
+      </div>
+
+      <div class="topbar-actions">
+        <button id="btnInstall" class="pill-btn install-btn" type="button" hidden>
+          ⬇ Telepítés
+        </button>
+        <span id="badgeInstalled" class="pill-badge" hidden>✓ Telepítve</span>
+        <button id="btnSettings" class="icon-btn" type="button" aria-label="Beállítások" title="Beállítások">
+          ⚙
+        </button>
+      </div>
+    </header>
+
+    <!-- Hero Title (compact when video active) -->
+    <section id="heroSection" class="hero">
+      <div class="hero-kicker">AUTOMATA FELIRAT · AZONNALI FORDÍTÁS</div>
+      <h1>Nézd magyarul.</h1>
+      <p>Illeszd be a YouTube-linket (vagy használd a Megosztás gombot), és az app magától lefordítja.</p>
+    </section>
+
+    <!-- URL Input Card -->
+    <section class="card url-card">
+      <div class="card-head">
+        <span class="step-label">01 · VIDEÓ</span>
+        <span class="yt-dot">▶</span>
+      </div>
+      <div class="url-row">
+        <input
+          id="urlInput"
+          type="url"
+          inputmode="url"
+          autocomplete="off"
+          placeholder="https://www.youtube.com/watch?v=..."
+        />
+        <button id="btnPaste" class="secondary-btn" type="button" title="Beillesztés vágólapról">
+          📋
+        </button>
+        <button id="btnLoad" class="primary-btn" type="button">
+          Betöltés ↗
+        </button>
+      </div>
+      <div id="videoMeta" class="video-meta" hidden>
+        <span id="videoTitle" class="video-title"></span>
+        <select id="trackSelect" class="track-select" hidden aria-label="Forrásnyelv"></select>
+      </div>
+    </section>
+
+    <!-- Player + Subtitle Stage (entire stage goes fullscreen!) -->
+    <section id="playerCard" class="card player-card" hidden>
+      <div id="playerStage" class="player-stage">
+        <div class="video-aspect">
+          <div id="ytPlayerMount"></div>
+        </div>
+
+        <!-- Hungarian Subtitle Area (below video in portrait, floating overlay in fullscreen) -->
+        <div id="subtitleStage" class="subtitle-stage">
+          <div id="subtitleBox" class="subtitle-box">
+            <div id="subHu" class="sub-hu">Itt jelenik meg a magyar felirat.</div>
+            <div id="subOrig" class="sub-orig" hidden></div>
+          </div>
+        </div>
+
+        <!-- Floating Fullscreen Exit button -->
+        <button id="btnExitFs" class="fs-exit-btn" type="button" hidden>✕ Kilépés</button>
+      </div>
+
+      <!-- Custom Seek Bar & Controls -->
+      <div class="controls-panel">
+        <div class="seek-row">
+          <span id="timeCurrent" class="time-code">0:00</span>
+          <input id="seekBar" type="range" min="0" max="100" value="0" step="0.2" aria-label="Idővonal" />
+          <span id="timeDuration" class="time-code">0:00</span>
+        </div>
+
+        <div class="btn-row">
+          <button id="btnBack5" class="ctrl-btn" type="button" title="Vissza 5 mp">-5s</button>
+          <button id="btnPlayPause" class="primary-btn play-btn" type="button">▶ Lejátszás</button>
+          <button id="btnFwd5" class="ctrl-btn" type="button" title="Előre 5 mp">+5s</button>
+          <button id="btnFullscreen" class="ctrl-btn" type="button" title="Teljes képernyő felirattal">⛶</button>
+        </div>
+
+        <div class="btn-row secondary-row">
+          <button id="btnBilingual" class="chip-btn" type="button">Kétnyelvű: KI</button>
+          <div class="font-group">
+            <button id="btnFontDown" class="chip-btn" type="button">A-</button>
+            <button id="btnFontUp" class="chip-btn" type="button">A+</button>
+          </div>
+          <button id="btnRetranslate" class="chip-btn" type="button" title="Újrafordítás">↻ Újra</button>
+        </div>
+
+        <div class="status-row">
+          <span id="statusSpinner" class="spinner" hidden></span>
+          <span id="statusText" class="status-text">Készen áll.</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Synchronized Clickable Transcript -->
+    <section id="transcriptCard" class="card transcript-card" hidden>
+      <div class="card-head">
+        <span class="step-label">02 · SZÖVEGKÖNYV (KATTINTVA ODALUGRIK)</span>
+        <span id="cueCounter" class="cue-counter">0 sor</span>
+      </div>
+      <div id="transcriptList" class="transcript-list"></div>
+    </section>
+
+    <!-- Recent Videos -->
+    <section id="historyCard" class="card history-card" hidden>
+      <div class="card-head">
+        <span class="step-label">LEGUTÓBBI VIDEÓK</span>
+        <button id="btnClearHistory" class="link-btn" type="button">Törlés</button>
+      </div>
+      <div id="historyList" class="history-list"></div>
+    </section>
+  </div>
+
+  <!-- Settings Modal -->
+  <div id="settingsModal" class="modal-backdrop" hidden>
+    <div class="modal-sheet" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+      <div class="modal-head">
+        <h2 id="settingsTitle">Fordítási beállítások</h2>
+        <button id="btnCloseSettings" class="icon-btn" type="button">✕</button>
+      </div>
+
+      <div class="modal-body">
+        <label class="field-label">Fordítómotor</label>
+        <div class="radio-stack">
+          <label class="radio-card">
+            <input type="radio" name="engine" value="google_free" checked />
+            <div>
+              <strong>Ingyenes Google Translate</strong>
+              <span>Azonnal működik, API-kulcs nélkül.</span>
+            </div>
+          </label>
+          <label class="radio-card">
+            <input type="radio" name="engine" value="gemini" />
+            <div>
+              <strong>Gemini AI (Ajánlott)</strong>
+              <span>Természetes, kontextushelyes magyar szöveg. Ingyenes kulcs: aistudio.google.com</span>
+            </div>
+          </label>
+          <label class="radio-card">
+            <input type="radio" name="engine" value="openai" />
+            <div>
+              <strong>OpenAI / GPT</strong>
+              <span>Ha saját OpenAI API-kulcsot használnál.</span>
+            </div>
+          </label>
+        </div>
+
+        <div id="aiFields" class="ai-fields">
+          <label class="field-label" for="inputApiKey">API kulcs (csak a telefonodon tárolódik)</label>
+          <input id="inputApiKey" type="password" placeholder="Illeszd be az API kulcsod..." autocomplete="off" />
+
+          <label class="field-label" for="inputModel">Modell neve (opcionális)</label>
+          <input id="inputModel" type="text" placeholder="pl. gemini-2.5-flash vagy gpt-4o-mini" autocomplete="off" />
+        </div>
+
+        <details class="advanced-box">
+          <summary>Haladó / Tartalék feliratletöltő (opcionális)</summary>
+          <p class="hint-text">
+            Ha a YouTube ritkán korlátozná egy videó feliratát felhős szerverről, egy ingyenes
+            <strong>Supadata</strong> kulcs (supadata.ai) tartalékként segíthet.
+          </p>
+          <input id="inputSupadataKey" type="password" placeholder="Supadata API kulcs (nem kötelező)" autocomplete="off" />
+        </details>
+      </div>
+
+      <div class="modal-foot">
+        <button id="btnSaveSettings" class="primary-btn full-btn" type="button">Mentés</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://www.youtube.com/iframe_api"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
