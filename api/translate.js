@@ -1,55 +1,79 @@
 // Serverless function: translates subtitle batches to natural Hungarian.
 // Supports Free Google Translate (default, no API key), Gemini AI, and OpenAI GPT.
+// The app translates with Google directly from the phone first; this endpoint is its fallback.
 
-async function translateSingleGoogleFree(text) {
-  try {
-    const url =
-      "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=hu&dt=t&q=" +
-      encodeURIComponent(text);
-    const resp = await fetch(url, {
-      headers: { "User-Agent": "Mozilla/5.0" }
-    });
-    if (!resp.ok) return text;
-    const data = await resp.json();
-    const parts = Array.isArray(data?.[0]) ? data[0] : [];
-    const out = parts.map((p) => (Array.isArray(p) ? p[0] || "" : "")).join("").trim();
-    return out || text;
-  } catch {
-    return text;
-  }
+const GT_URL = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=hu&dt=t&q=";
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Runs fn over items with at most `limit` calls in flight, keeping the order.
+async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i], i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
 }
 
+// One Google request; retries once on rate limiting or a server error.
+async function googleFreeRaw(text) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const resp = await fetch(GT_URL + encodeURIComponent(text), {
+      headers: { "User-Agent": "Mozilla/5.0" },
+      signal: AbortSignal.timeout(10000)
+    });
+    if (resp.ok) {
+      const data = await resp.json();
+      const segments = Array.isArray(data?.[0]) ? data[0] : [];
+      return segments.map((s) => (Array.isArray(s) ? s[0] || "" : "")).join("");
+    }
+    if (resp.status !== 429 && resp.status < 500) break;
+    await sleep(700 * (attempt + 1));
+  }
+  throw new Error("A Google Fordító nem válaszolt (túlterhelés vagy korlátozás).");
+}
+
+// A line of three or more words that comes back unchanged was not translated.
+function looksUntranslated(src, out) {
+  return (
+    /\p{L}{2,}[^\p{L}]+\p{L}{2,}[^\p{L}]+\p{L}{2,}/u.test(src) &&
+    out.trim().toLowerCase() === src.trim().toLowerCase()
+  );
+}
+
+// Lines are joined with plain line breaks: Google keeps one output line per input line.
+// (The former "###SEP###" marker was translated to "###SZEPT###", which broke every batch.)
 async function translateWithGoogleFree(lines) {
-  const sep = "\n###SEP###\n";
-  const joined = lines.join(sep);
-  const url =
-    "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=hu&dt=t&q=" +
-    encodeURIComponent(joined);
-
-  const resp = await fetch(url, {
-    headers: { "User-Agent": "Mozilla/5.0" }
-  });
-  if (!resp.ok) {
-    throw new Error(`Google Translate HTTP ${resp.status}`);
+  let result = null;
+  try {
+    const parts = (await googleFreeRaw(lines.join("\n"))).split("\n");
+    if (parts.length === lines.length) result = parts.map((p, i) => p.trim() || lines[i]);
+  } catch {
+    // falls back to line-by-line below
   }
-  const data = await resp.json();
-  const segments = Array.isArray(data?.[0]) ? data[0] : [];
-  const full = segments.map((s) => (Array.isArray(s) ? s[0] || "" : "")).join("");
+  const single = (line) =>
+    googleFreeRaw(line)
+      .then((t) => t.trim() || line)
+      .catch(() => line);
+  if (!result) result = await mapLimit(lines, 4, single);
 
-  const split = full
-    .split(/\s*###\s*SEP\s*###\s*/i)
-    .map((s) => s.trim());
-
-  if (split.length === lines.length) {
-    return split.map((s, i) => s || lines[i]);
+  const retryIdx = result.map((t, i) => (looksUntranslated(lines[i], t) ? i : -1)).filter((i) => i >= 0);
+  if (retryIdx.length) {
+    const again = await mapLimit(retryIdx, 4, (i) => single(lines[i]));
+    retryIdx.forEach((lineIdx, k) => {
+      result[lineIdx] = again[k];
+    });
   }
-
-  // Fallback per-line if separator drifted
-  const results = [];
-  for (const line of lines) {
-    results.push(await translateSingleGoogleFree(line));
+  const failed = result.filter((t, i) => looksUntranslated(lines[i], t)).length;
+  if (failed > 0 && failed === lines.length) {
+    throw new Error("A Google Fordító egyetlen sort sem fordított le.");
   }
-  return results;
+  return { translations: result, failed };
 }
 
 function mapIndexedItems(arr, fallback) {
@@ -182,26 +206,26 @@ export default async function handler(req, res) {
       : engine;
 
   try {
-    let translated;
-    if (chosenEngine === "gemini") {
-      translated = await translateWithGemini(cleanTexts, effectiveKey, model);
-    } else if (chosenEngine === "openai") {
-      translated = await translateWithOpenAi(cleanTexts, effectiveKey, model);
-    } else {
-      translated = await translateWithGoogleFree(cleanTexts);
+    if (chosenEngine === "gemini" || chosenEngine === "openai") {
+      const translated =
+        chosenEngine === "gemini"
+          ? await translateWithGemini(cleanTexts, effectiveKey, model)
+          : await translateWithOpenAi(cleanTexts, effectiveKey, model);
+      return res.status(200).json({ engine: chosenEngine, translations: translated, failed: 0 });
     }
-    return res.status(200).json({
-      engine: chosenEngine,
-      translations: translated
-    });
+    const google = await translateWithGoogleFree(cleanTexts);
+    return res.status(200).json({ engine: "google_free", ...google });
   } catch (err) {
-    // Fallback to free Google Translate on AI error so user still gets subtitles
+    // An AI error falls back to free Google Translate so the user still gets subtitles.
+    if (chosenEngine === "google_free") {
+      return res.status(502).json({ error: err?.message || "A fordítás nem sikerült." });
+    }
     try {
       const fallback = await translateWithGoogleFree(cleanTexts);
       return res.status(200).json({
         engine: "google_free",
         fallbackWarning: err?.message || "AI hiba, automatikus váltás Google fordítóra.",
-        translations: fallback
+        ...fallback
       });
     } catch (err2) {
       return res.status(502).json({
