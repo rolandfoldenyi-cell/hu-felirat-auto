@@ -39,7 +39,7 @@
     <section id="heroSection" class="hero">
       <div class="hero-kicker">AUTOMATA FELIRAT · AZONNALI FORDÍTÁS</div>
       <h1>Nézd magyarul.</h1>
-      <p>Illeszd be a YouTube-linket (vagy használd a Megosztás gombot), és az app magától lefordítja.</p>
+      <p>Illeszd be a YouTube-linket. Ha az automatikus letöltés nem sikerül, használhatod a YouTube feliratait vagy saját feliratfájlt.</p>
     </section>
 
     <!-- URL Input Card -->
@@ -72,7 +72,7 @@
     <!-- Player + Subtitle Stage (entire stage goes fullscreen!) -->
     <section id="playerCard" class="card player-card" hidden>
       <div id="playerStage" class="player-stage">
-        <div class="video-aspect">
+        <div id="ytPlayerHost" class="video-aspect">
           <div id="ytPlayerMount"></div>
         </div>
 
@@ -121,6 +121,32 @@
           <span id="statusText" class="status-text">Készen áll.</span>
         </div>
       </div>
+    </section>
+
+
+    <section id="freeOptions" class="card free-options" hidden aria-labelledby="freeOptionsTitle">
+      <div class="card-head"><span id="freeOptionsTitle" class="step-label">INGYENES LEHETŐSÉGEK TELEFONON</span></div>
+      <p id="captionNotice" class="hint-text" aria-live="polite"></p>
+      <button id="btnNativeCaptions" class="primary-btn full-btn" type="button">YouTube-feliratok — ingyen</button>
+      <p class="hint-text">A videó fogaskereke → Feliratok / Captions → Automatikus fordítás / Auto-translate → Magyar / Hungarian, ha elérhető.
+        Ha a beágyazott lejátszóban nincs ilyen menü: <a id="openYouTube" target="_blank" rel="noopener noreferrer">Megnyitás YouTube-on</a>.</p>
+      <details class="advanced-box">
+        <summary>Saját felirat fordítása — ingyen (SRT/VTT)</summary>
+        <p class="hint-text">A telefonodon lévő feliratot betöltheted vagy beillesztheted. A magyar fordítás időzítve jelenik meg a videó alatt.
+          A fájlt az app olvassa be; a fordításhoz a feliratszöveg a kiválasztott fordítóhoz kerül.</p>
+        <label class="field-label" for="importLanguage">A felirat nyelve</label>
+        <select id="importLanguage">
+          <option value="">Automatikus felismerés</option>
+          <option value="en">Angol</option><option value="de">Német</option>
+          <option value="fr">Francia</option><option value="es">Spanyol</option>
+          <option value="hu">Magyar — fordítás nélkül</option>
+        </select>
+        <label class="field-label" for="subtitleFile">Feliratfájl kiválasztása a telefonról (SRT/VTT, legfeljebb 2 MB)</label>
+        <input id="subtitleFile" type="file" accept=".srt,.vtt,application/x-subrip,text/vtt,text/plain" />
+        <label class="field-label" for="subtitleText">Vagy illeszd be az időzített SRT/VTT feliratot</label>
+        <textarea id="subtitleText" rows="5" placeholder="1&#10;00:00:01,000 --> 00:00:04,000&#10;Hello, how are you?"></textarea>
+        <button id="btnImportText" class="secondary-btn full-btn" type="button">Beillesztett felirat betöltése</button>
+      </details>
     </section>
 
     <!-- Synchronized Clickable Transcript -->
@@ -195,4 +221,5 @@
   <script type="module" src="/app.js"></script>
 </body>
 </html>
+
 

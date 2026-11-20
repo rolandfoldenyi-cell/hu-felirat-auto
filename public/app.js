@@ -1,3 +1,4 @@
+import { parseTimedSubtitles } from "/subtitle-files.js";
 import { createChromeSession, translateByPriority } from "/translation-priority.js";
 
 // HU Felirat Auto PWA — Automatic YouTube caption fetch + progressive Hungarian translation
@@ -20,6 +21,9 @@ const state = {
   ytPlayer: null,
   ytApiReady: typeof window.YT?.Player === "function",
   pendingVideoId: null,
+  pendingPlayerOptions: {},
+  nativeCaptionMode: false,
+  loadEpoch: 0,
   pollTimer: null,
   isSeeking: false,
   translationAbortController: null,
@@ -70,7 +74,17 @@ const els = {
   inputDeepLPlan: document.getElementById("inputDeepLPlan"),
   btnEnableChrome: document.getElementById("btnEnableChrome"),
   btnCaptionFallback: document.getElementById("btnCaptionFallback"),
-  inputSupadataKey: document.getElementById("inputSupadataKey")
+  inputSupadataKey: document.getElementById("inputSupadataKey"),
+  freeOptions: document.getElementById("freeOptions"),
+  captionNotice: document.getElementById("captionNotice"),
+  btnNativeCaptions: document.getElementById("btnNativeCaptions"),
+  openYouTube: document.getElementById("openYouTube"),
+  subtitleFile: document.getElementById("subtitleFile"),
+  subtitleText: document.getElementById("subtitleText"),
+  importLanguage: document.getElementById("importLanguage"),
+  btnImportText: document.getElementById("btnImportText"),
+  subtitleStage: document.getElementById("subtitleStage"),
+  ytPlayerHost: document.getElementById("ytPlayerHost")
 };
 
 // ---------------- Settings & History ----------------
@@ -385,28 +399,40 @@ function applySubtitleStyle() {
 window.onYouTubeIframeAPIReady = function () {
   state.ytApiReady = true;
   if (state.pendingVideoId) {
-    mountOrLoadPlayer(state.pendingVideoId);
+    mountOrLoadPlayer(state.pendingVideoId, state.pendingPlayerOptions);
     state.pendingVideoId = null;
   }
 };
 
-function mountOrLoadPlayer(videoId) {
+function mountOrLoadPlayer(videoId, { nativeCaptions = false, startSeconds = 0 } = {}) {
   if (!state.ytApiReady || typeof YT === "undefined" || !YT.Player) {
     state.pendingVideoId = videoId;
+    state.pendingPlayerOptions = { nativeCaptions, startSeconds };
     return;
   }
 
   if (state.ytPlayer && typeof state.ytPlayer.loadVideoById === "function") {
-    state.ytPlayer.loadVideoById(videoId);
-    return;
+    if (state.nativeCaptionMode === nativeCaptions) {
+      state.ytPlayer.loadVideoById({ videoId, startSeconds });
+      return;
+    }
+    if (state.pollTimer) clearInterval(state.pollTimer);
+    state.ytPlayer.destroy();
+    state.ytPlayer = null;
+    const mount = document.createElement("div");
+    mount.id = "ytPlayerMount";
+    els.ytPlayerHost.replaceChildren(mount);
   }
+  state.nativeCaptionMode = nativeCaptions;
 
   state.ytPlayer = new YT.Player("ytPlayerMount", {
     videoId,
     playerVars: {
       autoplay: 1,
       playsinline: 1,
-      cc_load_policy: 0,
+      cc_load_policy: nativeCaptions ? 1 : 0,
+      cc_lang_pref: "hu",
+      start: Math.max(0, Math.floor(startSeconds)),
       rel: 0,
       modestbranding: 1
     },
@@ -494,6 +520,10 @@ async function loadVideoFromInput(rawInput, preferredLang = "", allowSupadata = 
     return;
   }
 
+  state.loadEpoch++;
+  showFreeOptions(videoId);
+  setNativeCaptionLayout(false);
+
   // Cancel any ongoing translation
   if (state.translationAbortController) {
     state.translationAbortController.abort();
@@ -544,6 +574,7 @@ async function loadVideoFromInput(rawInput, preferredLang = "", allowSupadata = 
     });
 
     const capData = await readJsonResponse(capResp);
+    abortController.signal.throwIfAborted();
     if (!capResp.ok) {
       if (capData.details) console.warn("[captions] részletek:", capData.details);
       const capErr = new Error(capData.error || "Nem sikerült letölteni a feliratot.");
@@ -591,14 +622,94 @@ async function loadVideoFromInput(rawInput, preferredLang = "", allowSupadata = 
     }
   } catch (err) {
     if (err.name === "AbortError") return;
-    setStatus(err.message || "Hiba történt a felirat betöltése közben.", { error: true });
+    els.captionNotice.textContent = "Az automatikus letöltés nem sikerült. Az alábbi két ingyenes lehetőséggel folytathatod.";
+    setStatus("A felirat letöltése nem sikerült. Válassz az ingyenes lehetőségek közül.", { error: true });
     els.subHu.textContent =
       err.reason === "youtube_blocked"
-        ? "A YouTube nem adta ki ennek a videónak a feliratát a szervernek (részletek lent)."
+        ? "A YouTube most nem engedte letölteni a feliratot. Lent találsz ingyenes megoldást."
         : "Ehhez a videóhoz nem érkezett felirat.";
     els.subHu.classList.add("placeholder");
   }
 }
+
+function showFreeOptions(videoId) {
+  els.freeOptions.hidden = false;
+  els.openYouTube.href = "https://www.youtube.com/watch?v=" + videoId;
+  els.captionNotice.textContent = "Ezekhez a lehetőségekhez nem kell API-kulcs, kredit vagy számítógép.";
+}
+
+function setNativeCaptionLayout(native) {
+  els.subtitleStage.hidden = native;
+  for (const control of [els.btnBilingual, els.btnFontDown, els.btnFontUp]) control.disabled = native;
+}
+
+function useNativeCaptions() {
+  if (!state.videoId) return;
+  state.translationAbortController?.abort();
+  state.loadEpoch++;
+  state.chromeSession?.destroy();
+  state.chromeSession = null;
+  const startSeconds = Number(state.ytPlayer?.getCurrentTime?.() || 0);
+  state.cues = [];
+  state.activeCueIndex = -1;
+  els.transcriptCard.hidden = true;
+  els.btnCaptionFallback.hidden = true;
+  els.btnEnableChrome.hidden = true;
+  setNativeCaptionLayout(true);
+  mountOrLoadPlayer(state.videoId, { nativeCaptions: true, startSeconds });
+  setStatus("YouTube-feliratok: a videó fogaskerekénél válaszd a Feliratok → Automatikus fordítás → Magyar lehetőséget, ha elérhető.");
+  els.captionNotice.textContent = "Ebben a módban a felirat a videón jelenik meg. Magyar fordítást a YouTube feliratmenüjében választhatsz.";
+}
+
+async function importSubtitleText(text, language = "", filename = "Beillesztett felirat") {
+  // Validate before changing playback or cancelling an existing translation.
+  const videoId = extractVideoId(els.urlInput.value || state.videoId);
+  if (!videoId) throw new Error("Előbb illeszd be a videó YouTube-linkjét.");
+  const cues = parseTimedSubtitles(text);
+  const needsPlayerLoad = state.videoId !== videoId || !state.ytPlayer || state.nativeCaptionMode;
+  const startSeconds = state.videoId === videoId ? Number(state.ytPlayer?.getCurrentTime?.() || 0) : 0;
+  state.translationAbortController?.abort();
+  state.chromeSession?.destroy();
+  state.chromeSession = null;
+  state.chromeAttempted = false;
+  state.deepLDisabled = false;
+  state.loadEpoch++;
+  const controller = new AbortController();
+  state.translationAbortController = controller;
+  const sameVideo = state.videoId === videoId;
+  state.videoId = videoId;
+  state.title = sameVideo && state.title ? state.title : "YouTube videó (" + videoId + ")";
+  state.sourceLanguage = language;
+  state.sourceLangName = filename;
+  state.tracks = [];
+  state.activeCueIndex = -1;
+  state.cues = cues.map(cue => ({ start: cue.start, end: cue.end, original: cue.text,
+    translated: language === "hu" ? cue.text : null }));
+  els.heroSection.classList.add("compact");
+  els.playerCard.hidden = false;
+  els.videoMeta.hidden = false;
+  els.videoTitle.textContent = state.title;
+  els.trackSelect.hidden = true;
+  els.btnCaptionFallback.hidden = true;
+  els.btnEnableChrome.hidden = true;
+  showFreeOptions(videoId);
+  setNativeCaptionLayout(false);
+  if (needsPlayerLoad) mountOrLoadPlayer(videoId, { startSeconds });
+  addToHistory(videoId, state.title);
+  renderTranscriptList();
+  updateActiveSubtitle(startSeconds);
+  els.captionNotice.textContent = cues.length + " feliratsor betöltve. A feliratletöltő szolgáltatást nem használjuk.";
+  if (language === "hu") {
+    setStatus("Kész — magyar felirat betöltve (" + cues.length + " sor).");
+    refreshSubtitleDisplay();
+    return;
+  }
+  try { await translateAllProgressive(controller.signal, filename); }
+  catch (error) {
+    if (error.name !== "AbortError") setStatus("A felirat betöltve, de a fordítás nem sikerült: " + error.message, { error: true });
+  }
+}
+
 
 function renderTrackSelector(selectedLangCode) {
   if (!state.tracks || state.tracks.length <= 1) {
@@ -804,6 +915,25 @@ function setupPwa() {
 // ---------------- Event Listeners ----------------
 
 function bindEvents() {
+  els.btnNativeCaptions.addEventListener("click", useNativeCaptions);
+  els.btnImportText.addEventListener("click", async () => {
+    try { await importSubtitleText(els.subtitleText.value, els.importLanguage.value); }
+    catch (error) { setStatus(error.message, { error: true }); }
+  });
+  els.subtitleFile.addEventListener("change", async () => {
+    const file = els.subtitleFile.files?.[0];
+    if (!file) return;
+    const epoch = state.loadEpoch;
+    const selectedVideo = els.urlInput.value;
+    const language = els.importLanguage.value;
+    try {
+      if (file.size > 2 * 1024 * 1024) throw new Error("A feliratfájl legfeljebb 2 MB lehet.");
+      const text = await file.text();
+      if (epoch !== state.loadEpoch || selectedVideo !== els.urlInput.value) return;
+      await importSubtitleText(text, language, file.name);
+    } catch (error) { setStatus(error.message, { error: true }); }
+    finally { els.subtitleFile.value = ""; }
+  });
   els.btnLoad.addEventListener("click", () => loadVideoFromInput(els.urlInput.value));
   els.urlInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
@@ -941,4 +1071,5 @@ applySubtitleStyle();
 renderHistory();
 bindEvents();
 setupPwa();
+
 

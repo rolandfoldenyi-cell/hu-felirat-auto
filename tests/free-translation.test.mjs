@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createChromeSession, translateByPriority } from '../public/translation-priority.js';
+import { parseTimedSubtitles } from '../public/subtitle-files.js';
 import translateHandler from '../api/translate.js';
 import captionsHandler from '../api/captions.js';
 import fs from 'node:fs';
@@ -129,6 +130,7 @@ test('real frontend boots against its HTML and translates without old AI keys or
     value:'',textContent:'',events:{},classList:{add(){},remove(){},toggle(){}},
     addEventListener(type,fn){this.events[type]=fn;},
     appendChild(child){this.children.push(...(child.fragment?child.children:[child]));},
+    replaceChildren(...children){this.children=children;},
     querySelector(){return element();},scrollIntoView(){},focus(){},
     set innerHTML(value){this._html=value;if(!value)this.children=[];},get innerHTML(){return this._html||'';}
   });
@@ -142,13 +144,15 @@ test('real frontend boots against its HTML and translates without old AI keys or
     engine:'openai',apiKey:'old-paid-key',supadataKey:'optional-credit-key'
   })]]);
   const navigator={};
-  const YT={Player:function(){return{loadVideoById(){}};}};
+  const playerConfigurations=[];
+  const YT={Player:function(id,options){playerConfigurations.push(options.playerVars);
+    return{loadVideoById(){},destroy(){}};}};
   const window={YT,navigator,location:{search:''},history:{replaceState(){}},
     matchMedia:()=>({matches:false}),addEventListener(){}};
   const requests=[];
   const context=vm.createContext({document,window,navigator,YT,URLSearchParams,
     AbortController,console,setTimeout,clearTimeout,setInterval,clearInterval,
-    createChromeSession,translateByPriority,
+    createChromeSession,translateByPriority,parseTimedSubtitles,
     localStorage:{getItem:key=>saved.get(key)||null,setItem:(key,value)=>saved.set(key,value)},
     fetch:async(url,options)=>{
       requests.push({url,options});
@@ -160,8 +164,8 @@ test('real frontend boots against its HTML and translates without old AI keys or
     }
   });
   const app=fs.readFileSync(new URL('../public/app.js',import.meta.url),'utf8')
-    .replace(/^import[^\n]+\n/,'');
-  new vm.Script(app+'\nglobalThis.appUnderTest={state,loadVideoFromInput};').runInContext(context);
+    .replace(/^import[^\n]+\n/gm,'');
+  new vm.Script(app+'\nglobalThis.appUnderTest={state,loadVideoFromInput,importSubtitleText,useNativeCaptions};').runInContext(context);
   assert.equal(context.appUnderTest.state.ytApiReady,true,'Already loaded YouTube API must be detected');
   await context.appUnderTest.loadVideoFromInput('dQw4w9WgXcQ');
   assert.equal(context.appUnderTest.state.cues[0].translated,magyar[0]);
@@ -169,4 +173,39 @@ test('real frontend boots against its HTML and translates without old AI keys or
   assert.equal(request.useSupadata,false);assert.equal(request.supadataKey,undefined);
   assert.ok(!JSON.stringify(requests).includes('old-paid-key'));
   assert.ok(nodes.get('statusText').textContent.includes('Kész'));
+
+  // Importing timed text translates without repeating the blocked caption request.
+  const beforeImport=requests.length;
+  await context.appUnderTest.importSubtitleText('1\n00:00:00,000 --> 00:00:04,000\n'+source[0],'en');
+  assert.equal(requests.length,beforeImport+1);
+  assert.equal(requests.at(-1).url.startsWith('https://translate.googleapis.com/'),true);
+  assert.equal(context.appUnderTest.state.cues[0].translated,magyar[0]);
+  assert.equal(nodes.get('freeOptions').hidden,false);
+  const hungarian='1\n00:00:00,000 --> 00:00:04,000\nMár magyar felirat.';
+  const beforeHungarian=requests.length;
+  await context.appUnderTest.importSubtitleText(hungarian,'hu');
+  assert.equal(requests.length,beforeHungarian,'Existing Hungarian subtitles need no external call');
+  context.appUnderTest.useNativeCaptions();
+  assert.equal(requests.length,beforeHungarian,'Native YouTube mode must not invoke caption providers');
+  assert.equal(nodes.get('subtitleStage').hidden,true);
+  assert.equal(playerConfigurations.at(-1).cc_load_policy,1);
+  assert.equal(playerConfigurations.at(-1).cc_lang_pref,'hu');
+  await context.appUnderTest.importSubtitleText(hungarian,'hu');
+  assert.equal(nodes.get('subtitleStage').hidden,false);
+  assert.equal(playerConfigurations.at(-1).cc_load_policy,0);
+  assert.equal(context.appUnderTest.state.cues[0].translated,'Már magyar felirat.');
+
+  // An old server response must never overwrite a locally imported subtitle.
+  const previousFetch=context.fetch;
+  let finishRequest;
+  context.fetch=async(url,options)=>url==='/api/captions'
+    ? await new Promise(resolve=>{finishRequest=resolve;}) : previousFetch(url,options);
+  nodes.get('urlInput').value='https://youtu.be/dQw4w9WgXcQ';
+  const pending=context.appUnderTest.loadVideoFromInput('dQw4w9WgXcQ');
+  await context.appUnderTest.importSubtitleText(hungarian,'hu');
+  finishRequest(new Response(JSON.stringify({selectedTrack:{langCode:'en'},tracks:[],
+    cues:[{start:0,end:1,text:'Stale server text'}]})));
+  await pending;
+  assert.equal(context.appUnderTest.state.cues[0].translated,'Már magyar felirat.');
 });
+
