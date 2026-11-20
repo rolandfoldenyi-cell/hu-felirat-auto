@@ -1,3 +1,5 @@
+import { createChromeSession, translateByPriority } from "/translation-priority.js";
+
 // HU Felirat Auto PWA — Automatic YouTube caption fetch + progressive Hungarian translation
 
 const STORAGE_SETTINGS = "hufelirat_auto_settings_v2";
@@ -7,11 +9,16 @@ const state = {
   settings: loadSettings(),
   videoId: null,
   title: "",
+  sourceLanguage: "",
+  sourceLangName: "",
+  chromeSession: null,
+  chromeAttempted: false,
+  deepLDisabled: false,
   tracks: [],
   cues: [], // { start, end, original, translated }
   activeCueIndex: -1,
   ytPlayer: null,
-  ytApiReady: false,
+  ytApiReady: typeof window.YT?.Player === "function",
   pendingVideoId: null,
   pollTimer: null,
   isSeeking: false,
@@ -59,8 +66,10 @@ const els = {
   settingsModal: document.getElementById("settingsModal"),
   btnCloseSettings: document.getElementById("btnCloseSettings"),
   btnSaveSettings: document.getElementById("btnSaveSettings"),
-  inputApiKey: document.getElementById("inputApiKey"),
-  inputModel: document.getElementById("inputModel"),
+  inputDeepLKey: document.getElementById("inputDeepLKey"),
+  inputDeepLPlan: document.getElementById("inputDeepLPlan"),
+  btnEnableChrome: document.getElementById("btnEnableChrome"),
+  btnCaptionFallback: document.getElementById("btnCaptionFallback"),
   inputSupadataKey: document.getElementById("inputSupadataKey")
 };
 
@@ -70,18 +79,18 @@ function loadSettings() {
   try {
     const raw = JSON.parse(localStorage.getItem(STORAGE_SETTINGS) || "{}");
     return {
-      engine: raw.engine || "google_free",
-      apiKey: raw.apiKey || "",
-      model: raw.model || "",
+      engine: "browser_free",
+      deeplKey: raw.deeplKey || "",
+      deeplPlan: raw.deeplPlan === "legacy_free" ? "legacy_free" : "developer",
       supadataKey: raw.supadataKey || "",
       bilingual: Boolean(raw.bilingual),
       fontSize: Number(raw.fontSize) || 18
     };
   } catch {
     return {
-      engine: "google_free",
-      apiKey: "",
-      model: "",
+      engine: "browser_free",
+      deeplKey: "",
+      deeplPlan: "developer",
       supadataKey: "",
       bilingual: false,
       fontSize: 18
@@ -193,8 +202,9 @@ async function readJsonResponse(resp) {
 }
 
 function engineLabel(engine) {
-  if (engine === "gemini") return "Gemini AI";
-  if (engine === "openai") return "OpenAI GPT";
+  if (engine === "chrome") return "Chrome beépített fordító";
+  if (engine === "deepl") return "DeepL tartalék";
+  if (engine === "browser_free") return "Chrome / ingyenes Google";
   return "Google Translate";
 }
 
@@ -280,31 +290,86 @@ async function translateGoogleDirect(lines, signal) {
   return { engine: "google_free", translations: result, failed };
 }
 
-async function translateBatch(texts, activeEngine, signal) {
-  if (activeEngine === "google_free") {
-    try {
-      return await translateGoogleDirect(texts, signal);
-    } catch (err) {
-      if (err.name === "AbortError") throw err;
-      console.warn("[translate] közvetlen Google-hívás sikertelen, szerveres tartalék:", err);
-    }
-  }
+async function requestServerTranslation(texts, engine, signal) {
   const resp = await fetch("/api/translate", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    signal,
-    body: JSON.stringify({
-      texts,
-      engine: activeEngine,
-      apiKey: state.settings.apiKey,
-      model: state.settings.model
+    method: "POST", headers: { "Content-Type": "application/json" }, signal,
+    body: JSON.stringify({ texts, engine,
+      ...(engine === "deepl" ? {
+        deeplKey: state.settings.deeplKey, deeplPlan: state.settings.deeplPlan
+      } : {})
     })
   });
   const data = await readJsonResponse(resp);
-  if (!resp.ok) {
-    throw new Error(data.error || "Fordítási hiba.");
-  }
+  if (!resp.ok) throw new Error(data.error || "Fordítási hiba.");
   return data;
+}
+
+async function chromeBatch(texts, signal) {
+  if (!state.chromeAttempted) {
+    state.chromeAttempted = true;
+    try {
+      state.chromeSession = await createChromeSession(state.sourceLanguage, {
+        signal, onProgress: (progress) => setStatus(
+          "Chrome nyelvi csomag letöltése: " + Math.round(progress * 100) + "%", { loading: true })
+      });
+    } catch (error) {
+      if (error.name === "NotAllowedError") els.btnEnableChrome.hidden = false;
+      throw error;
+    }
+  }
+  if (!state.chromeSession) throw new Error("A Chrome beépített fordítója ezen az eszközön nem elérhető.");
+  const translations = [];
+  for (const text of texts) {
+    signal.throwIfAborted();
+    translations.push(await state.chromeSession.translate(text));
+  }
+  return { translations };
+}
+
+async function translateBatch(texts, activeEngine, signal) {
+  return translateByPriority(texts, {
+    signal,
+    chromeTranslate: globalThis.Translator ? chromeBatch : null,
+    googleTranslate: async (lines) => {
+      try { return await translateGoogleDirect(lines, signal); }
+      catch (error) {
+        signal.throwIfAborted();
+        if (error.name === "AbortError") throw error;
+        return requestServerTranslation(lines, "google_free", signal);
+      }
+    },
+    deepLTranslate: state.settings.deeplKey && !state.deepLDisabled ? async (lines) => {
+      try { return await requestServerTranslation(lines, "deepl", signal); }
+      catch (error) { state.deepLDisabled = true; throw error; }
+    } : null
+  });
+}
+
+async function restartTranslation(enableChrome = false) {
+  if (!state.cues.length) return;
+  if (state.sourceLanguage.toLowerCase().startsWith("hu")) {
+    setStatus(`Kész — eredeti magyar felirat betöltve (${state.cues.length} sor).`);
+    return;
+  }
+  state.translationAbortController?.abort();
+  const controller = new AbortController();
+  state.translationAbortController = controller;
+  state.chromeSession?.destroy();
+  state.chromeSession = null;
+  state.chromeAttempted = false;
+  state.deepLDisabled = false;
+  try {
+    if (enableChrome) {
+      // Runs inside the click handler, so Chrome may download its language pack.
+      state.chromeSession = await createChromeSession(state.sourceLanguage, { signal: controller.signal });
+      controller.signal.throwIfAborted();
+      state.chromeAttempted = true;
+      els.btnEnableChrome.hidden = Boolean(state.chromeSession);
+    }
+    await translateAllProgressive(controller.signal, state.sourceLangName);
+  } catch (error) {
+    if (error.name !== "AbortError") setStatus(error.message, { error: true });
+  }
 }
 
 function applySubtitleStyle() {
@@ -421,7 +486,7 @@ function refreshSubtitleDisplay() {
 
 // ---------------- Fetch Captions & Progressive Translation ----------------
 
-async function loadVideoFromInput(rawInput, preferredLang = "") {
+async function loadVideoFromInput(rawInput, preferredLang = "", allowSupadata = false) {
   const videoId = extractVideoId(rawInput);
   if (!videoId) {
     setStatus("Nem érvényes YouTube-link.", { error: true });
@@ -437,6 +502,13 @@ async function loadVideoFromInput(rawInput, preferredLang = "") {
   state.translationAbortController = abortController;
 
   const isNewVideo = state.videoId !== videoId;
+  state.chromeSession?.destroy();
+  state.chromeSession = null;
+  state.chromeAttempted = false;
+  state.deepLDisabled = false;
+  state.sourceLanguage = "";
+  els.btnCaptionFallback.hidden = true;
+  els.btnEnableChrome.hidden = true;
   state.videoId = videoId;
   state.cues = [];
   state.activeCueIndex = -1;
@@ -466,7 +538,8 @@ async function loadVideoFromInput(rawInput, preferredLang = "") {
       body: JSON.stringify({
         videoId,
         lang: preferredLang || undefined,
-        supadataKey: state.settings.supadataKey || undefined
+        useSupadata: allowSupadata,
+        supadataKey: allowSupadata ? state.settings.supadataKey || undefined : undefined
       })
     });
 
@@ -475,9 +548,12 @@ async function loadVideoFromInput(rawInput, preferredLang = "") {
       if (capData.details) console.warn("[captions] részletek:", capData.details);
       const capErr = new Error(capData.error || "Nem sikerült letölteni a feliratot.");
       capErr.reason = capData.reason;
+      els.btnCaptionFallback.hidden = allowSupadata || !(capData.canUseFallback || state.settings.supadataKey);
       throw capErr;
     }
 
+    state.sourceLanguage = capData.selectedTrack?.langCode || "";
+    state.sourceLangName = capData.selectedTrack?.langName || "";
     state.title = capData.title || `YouTube videó (${videoId})`;
     state.tracks = capData.tracks || [];
     state.cues = (capData.cues || []).map((c) => ({
@@ -583,12 +659,10 @@ function updateTranscriptRange(startIdx, endIdx) {
 
 async function translateAllProgressive(signal, sourceLangName) {
   const total = state.cues.length;
-  const engine = state.settings.engine;
-  const hasKey = Boolean(state.settings.apiKey);
-  const activeEngine = (engine === "gemini" || engine === "openai") && !hasKey ? "google_free" : engine;
-  const batchSize = activeEngine === "google_free" ? 20 : 24;
+  const activeEngine = "browser_free";
+  const batchSize = 20;
 
-  let warningShown = "";
+  const enginesUsed = new Set();
   let failedTotal = 0;
   let lastError = "";
   setStatus(
@@ -615,9 +689,7 @@ async function translateAllProgressive(signal, sourceLangName) {
       data = { engine: activeEngine, translations: [], failed: slice.length };
     }
 
-    if (data.fallbackWarning && !warningShown) {
-      warningShown = data.fallbackWarning;
-    }
+    for (const engine of data.engines || [data.engine]) enginesUsed.add(engine);
     failedTotal += Number(data.failed) || 0;
 
     const translatedArr = Array.isArray(data.translations) ? data.translations : [];
@@ -634,7 +706,7 @@ async function translateAllProgressive(signal, sourceLangName) {
     } else if (lastError && failedTotal >= total) {
       throw new Error(lastError);
     } else {
-      const suffix = warningShown ? " (AI hiba miatt Google tartalék)" : "";
+      const suffix = enginesUsed.size > 1 ? " · több fordító" : "";
       const done = failedTotal
         ? `${total - failedTotal} / ${total} sor lefordítva, ${failedTotal} eredeti nyelven maradt (↻ Újra).`
         : `${total} sor lefordítva.`;
@@ -816,9 +888,12 @@ function bindEvents() {
   });
 
   els.btnRetranslate.addEventListener("click", () => {
-    if (state.videoId) {
-      loadVideoFromInput(state.videoId, els.trackSelect.value || "");
-    }
+    if (state.cues.length) restartTranslation();
+    else if (state.videoId) loadVideoFromInput(state.videoId, els.trackSelect.value || "");
+  });
+  els.btnEnableChrome.addEventListener("click", () => restartTranslation(true));
+  els.btnCaptionFallback.addEventListener("click", () => {
+    if (state.videoId) loadVideoFromInput(state.videoId, els.trackSelect.value || "", true);
   });
 
   els.transcriptList.addEventListener("touchstart", () => {
@@ -835,10 +910,8 @@ function bindEvents() {
 
   // Settings Modal
   els.btnSettings.addEventListener("click", () => {
-    const radio = document.querySelector(`input[name="engine"][value="${state.settings.engine}"]`);
-    if (radio) radio.checked = true;
-    els.inputApiKey.value = state.settings.apiKey;
-    els.inputModel.value = state.settings.model;
+    els.inputDeepLKey.value = state.settings.deeplKey;
+    els.inputDeepLPlan.value = state.settings.deeplPlan;
     els.inputSupadataKey.value = state.settings.supadataKey;
     els.settingsModal.hidden = false;
   });
@@ -852,17 +925,14 @@ function bindEvents() {
   });
 
   els.btnSaveSettings.addEventListener("click", () => {
-    const selected = document.querySelector('input[name="engine"]:checked')?.value || "google_free";
-    state.settings.engine = selected;
-    state.settings.apiKey = els.inputApiKey.value.trim();
-    state.settings.model = els.inputModel.value.trim();
+    state.settings.engine = "browser_free";
+    state.settings.deeplKey = els.inputDeepLKey.value.trim();
+    state.settings.deeplPlan = els.inputDeepLPlan.value;
     state.settings.supadataKey = els.inputSupadataKey.value.trim();
     saveSettings();
     els.settingsModal.hidden = true;
 
-    if (state.videoId) {
-      loadVideoFromInput(state.videoId, els.trackSelect.value || "");
-    }
+    if (state.cues.length) restartTranslation();
   });
 }
 
@@ -871,3 +941,4 @@ applySubtitleStyle();
 renderHistory();
 bindEvents();
 setupPwa();
+

@@ -476,7 +476,7 @@ function describeFailure(diag, hadSupadataKey) {
       status: 502,
       message:
         "A YouTube ennél a videónál nem engedi a felirat letöltését a Vercel szerveréről („Sign in to confirm you're not a bot”), " +
-        "mert a kérés adatközponti IP-címről jön. Megoldás: ingyenes Supadata API-kulcs (supadata.ai, havi 100 videó) a " +
+        "mert a kérés adatközponti IP-címről jön. Végső tartalék: a Supadata feliratletöltő külön gombbal indítható. Kulcsot a " +
         "Beállítások → Haladó / Tartalék feliratletöltő mezőben."
     };
   }
@@ -532,6 +532,8 @@ export default async function handler(req, res) {
   const input = body.videoId || body.url || query.videoId || query.url;
   const preferredLang = body.lang || query.lang || "";
   const supadataKey = body.supadataKey || process.env.SUPADATA_API_KEY || "";
+  // A key never authorizes credit usage by itself. Each request must opt in.
+  const useSupadata = req.method === "POST" && body.useSupadata === true;
 
   const videoId = extractVideoId(input);
   if (!videoId) {
@@ -590,7 +592,7 @@ export default async function handler(req, res) {
     }
   }
 
-  if (supadataKey) {
+  if (useSupadata && supadataKey) {
     const supaRes = await fetchViaSupadata(videoId, supadataKey, preferredLang, diag);
     if (supaRes && supaRes.cues.length > 0) {
       console.log(
@@ -614,12 +616,14 @@ export default async function handler(req, res) {
     }
   }
 
-  const failure = describeFailure(diag, Boolean(supadataKey));
+  const failure = describeFailure(diag, useSupadata && Boolean(supadataKey));
   console.warn(LOG, JSON.stringify({ videoId, region, outcome: failure.reason, diag }));
   return res.status(failure.status).json({
     error: failure.message,
     reason: failure.reason,
+    canUseFallback: Boolean(supadataKey),
     region,
     details: diag
   });
 }
+

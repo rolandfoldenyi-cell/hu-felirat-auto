@@ -112,6 +112,10 @@
           <button id="btnRetranslate" class="chip-btn" type="button" title="Újrafordítás">↻ Újra</button>
         </div>
 
+        <div class="btn-row secondary-row">
+          <button id="btnEnableChrome" class="chip-btn" type="button" hidden>Chrome-fordító bekapcsolása</button>
+          <button id="btnCaptionFallback" class="chip-btn" type="button" hidden>Végső tartalék: Supadata (1 kredit)</button>
+        </div>
         <div class="status-row">
           <span id="statusSpinner" class="spinner" hidden></span>
           <span id="statusText" class="status-text">Készen áll.</span>
@@ -147,45 +151,35 @@
       </div>
 
       <div class="modal-body">
-        <label class="field-label">Fordítómotor</label>
-        <div class="radio-stack">
-          <label class="radio-card">
-            <input type="radio" name="engine" value="google_free" checked />
-            <div>
-              <strong>Ingyenes Google Translate</strong>
-              <span>Azonnal működik, API-kulcs nélkül.</span>
-            </div>
-          </label>
-          <label class="radio-card">
-            <input type="radio" name="engine" value="gemini" />
-            <div>
-              <strong>Gemini AI (Ajánlott)</strong>
-              <span>Természetes, kontextushelyes magyar szöveg. Ingyenes kulcs: aistudio.google.com</span>
-            </div>
-          </label>
-          <label class="radio-card">
-            <input type="radio" name="engine" value="openai" />
-            <div>
-              <strong>OpenAI / GPT</strong>
-              <span>Ha saját OpenAI API-kulcsot használnál.</span>
-            </div>
-          </label>
-        </div>
-
-        <div id="aiFields" class="ai-fields">
-          <label class="field-label" for="inputApiKey">API kulcs (csak a telefonodon tárolódik)</label>
-          <input id="inputApiKey" type="password" placeholder="Illeszd be az API kulcsod..." autocomplete="off" />
-
-          <label class="field-label" for="inputModel">Modell neve (opcionális)</label>
-          <input id="inputModel" type="text" placeholder="pl. gemini-2.5-flash vagy gpt-4o-mini" autocomplete="off" />
-        </div>
+        <p class="hint-text"><strong>Elsődleges: Chrome / Google — ingyenesen.</strong><br />
+          Számítógépen a Chrome beépített fordítójával próbálkozunk. Telefonon ez az appoknak
+          nem elérhető, ezért ott az ingyenes Google-fordítást használjuk. API-kulcs nem kell.
+        </p>
+        <details class="advanced-box">
+          <summary>Másodlagos fordító: DeepL (opcionális)</summary>
+          <p class="hint-text">Csak akkor hívjuk, ha a Chrome / Google nem fordított le egy sort.
+            Kulcs nélkül is használhatod az appot. A kulcs ezen az eszközön tárolódik, és a fordításkor
+            a saját szerverünkön keresztül jut el a DeepL-hez.</p>
+          <label class="field-label" for="inputDeepLPlan">A DeepL-fiókod ingyenes API-csomagja</label>
+          <select id="inputDeepLPlan">
+            <option value="developer">Developer — ingyenes próba, összesen 1 millió karakter</option>
+            <option value="legacy_free">API Free — meglévő fiók, havi 500 ezer karakter</option>
+          </select>
+          <label class="field-label" for="inputDeepLKey">DeepL API-kulcs (nem kötelező)</label>
+          <input id="inputDeepLKey" type="password" placeholder="Opcionális DeepL-kulcs" autocomplete="off" />
+          <p class="hint-text">Kulcs beszerzése: <a href="https://www.deepl.com/en/signup?cta=checkout&amp;is_api=true&amp;productId=api-developer"
+            target="_blank" rel="noopener noreferrer">DeepL Developer regisztráció</a>, majd
+            Account → API Keys &amp; Limits → Create key. Csak ingyenes csomag kulcsát add meg;
+            fizetős csomagra az app nem vált át.</p>
+        </details>
 
         <details class="advanced-box">
           <summary>Haladó / Tartalék feliratletöltő (opcionális)</summary>
           <p class="hint-text">
             A YouTube a legtöbb videónál nem adja ki a feliratot felhős szervernek (adatközponti IP).
-            Egy ingyenes <strong>Supadata</strong> kulccsal (supadata.ai, havi 100 videó, bankkártya nélkül)
-            ilyenkor a tartalék letöltő hozza a feliratot. A kulcs csak ezen a telefonon tárolódik.
+            A <strong>Supadata</strong> kredites tartalék: a Free csomag havi 100 ingyenes kreditet ad.
+            Csak a „Végső tartalék: Supadata (1 kredit)” gomb megnyomására indítjuk, soha nem automatikusan.
+            A kulcs ezen az eszközön tárolódik, és a saját szerverünk továbbítja a Supadatának.
           </p>
           <input id="inputSupadataKey" type="password" placeholder="Supadata API kulcs (nem kötelező)" autocomplete="off" />
         </details>
@@ -198,6 +192,7 @@
   </div>
 
   <script src="https://www.youtube.com/iframe_api"></script>
-  <script src="/app.js"></script>
+  <script type="module" src="/app.js"></script>
 </body>
 </html>
+

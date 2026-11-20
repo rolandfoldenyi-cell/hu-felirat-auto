@@ -1,5 +1,5 @@
 // Serverless function: translates subtitle batches to natural Hungarian.
-// Supports Free Google Translate (default, no API key), Gemini AI, and OpenAI GPT.
+// Free Google Translate, with an explicitly configured DeepL account as fallback.
 // The app translates with Google directly from the phone first; this endpoint is its fallback.
 
 const GT_URL = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=hu&dt=t&q=";
@@ -82,161 +82,53 @@ async function translateWithGoogleFree(lines) {
   return { translations: result, failed };
 }
 
-function mapIndexedItems(arr, fallback) {
-  const map = new Map();
-  if (Array.isArray(arr)) {
-    for (const item of arr) {
-      if (item && typeof item.i === "number" && typeof item.t === "string") {
-        const clean = item.t.trim();
-        if (clean) map.set(item.i, clean);
-      }
-    }
-  }
-  return fallback.map((orig, i) => map.get(i) || orig);
-}
-
-async function translateWithGemini(lines, apiKey, model) {
-  const useModel = (model || "gemini-2.5-flash").trim();
-  const payloadItems = lines.map((t, i) => ({ i, t }));
-
-  const prompt = [
-    "Fordítsd le az alábbi YouTube feliratokat természetes, gördülékeny, kontextushelyes magyar nyelvre.",
-    "Figyelj az egymást követő sorok összefüggésére, hogy ne legyen tükörfordítás.",
-    'KIZÁRÓLAG érvényes JSON tömböt adj vissza, pontosan ugyanennyi elemmel: [{"i": 0, "t": "magyar fordítás"}]',
-    "Ne hagyj ki elemet, ne vonj össze elemeket, ne írj magyarázatot.",
-    "",
-    "Bemenet:",
-    JSON.stringify(payloadItems)
-  ].join("\n");
-
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(useModel)}:generateContent?key=${encodeURIComponent(apiKey)}`;
-  const resp = await fetch(url, {
+async function translateWithDeepL(lines, key, plan) {
+  if (typeof key !== "string" || !key.trim()) throw new Error("Hiányzik a DeepL API-kulcs.");
+  if (!["developer", "legacy_free"].includes(plan)) throw new Error("Válassz ingyenes DeepL API-csomagot.");
+  const host = plan === "legacy_free" ? "https://api-free.deepl.com" : "https://api.deepl.com";
+  const resp = await fetch(host + "/v2/translate", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: {
-        temperature: 0.2,
-        responseMimeType: "application/json"
-      }
-    })
+    headers: { "Content-Type": "application/json", "Authorization": "DeepL-Auth-Key " + key.trim() },
+    body: JSON.stringify({ text: lines, target_lang: "HU" }),
+    signal: AbortSignal.timeout(15000)
   });
-
   if (!resp.ok) {
-    const errTxt = await resp.text().catch(() => "");
-    throw new Error(`Gemini API hiba (${resp.status}): ${errTxt.slice(0, 140)}`);
+    if (resp.status === 456) throw new Error("Elfogyott a DeepL ingyenes karakterkerete. Nem váltunk fizetős csomagra.");
+    if (resp.status === 403) throw new Error("A DeepL-kulcs vagy a kiválasztott API-csomag nem megfelelő.");
+    throw new Error("A DeepL nem válaszolt megfelelően (HTTP " + resp.status + ").");
   }
-
   const data = await resp.json();
-  let rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-  rawText = rawText
-    .replace(/^```json\s*/i, "")
-    .replace(/^```\s*/i, "")
-    .replace(/\s*```$/, "")
-    .trim();
-
-  const startIdx = rawText.indexOf("[");
-  const endIdx = rawText.lastIndexOf("]");
-  if (startIdx === -1 || endIdx <= startIdx) {
-    throw new Error("A Gemini válasza nem érvényes JSON tömb.");
+  const translations = data?.translations?.map((item) => item?.text);
+  if (!Array.isArray(translations) || translations.length !== lines.length ||
+      translations.some((text) => typeof text !== "string" || !text.trim())) {
+    throw new Error("A DeepL hiányos fordítást adott.");
   }
-  const arr = JSON.parse(rawText.slice(startIdx, endIdx + 1));
-  return mapIndexedItems(arr, lines);
-}
-
-async function translateWithOpenAi(lines, apiKey, model) {
-  const useModel = (model || "gpt-4o-mini").trim();
-  const payloadItems = lines.map((t, i) => ({ i, t }));
-
-  const resp = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model: useModel,
-      temperature: 0.2,
-      response_format: { type: "json_object" },
-      messages: [
-        {
-          role: "system",
-          content:
-            'Profi YouTube feliratfordító vagy. Fordíts természetes, gördülékeny, kontextushelyes magyar nyelvre. KIZÁRÓLAG JSON objektumot adj vissza: {"items": [{"i": 0, "t": "magyar szöveg"}]} pontosan azonos elemszámmal.'
-        },
-        {
-          role: "user",
-          content: JSON.stringify(payloadItems)
-        }
-      ]
-    })
-  });
-
-  if (!resp.ok) {
-    const errTxt = await resp.text().catch(() => "");
-    throw new Error(`OpenAI API hiba (${resp.status}): ${errTxt.slice(0, 140)}`);
-  }
-
-  const data = await resp.json();
-  const content = data?.choices?.[0]?.message?.content || "{}";
-  const parsed = JSON.parse(content);
-  return mapIndexedItems(parsed.items, lines);
+  return translations;
 }
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-
-  if (req.method === "OPTIONS") {
-    return res.status(204).end();
+  res.setHeader("Cache-Control", "no-store");
+  if (req.method === "OPTIONS") return res.status(204).end();
+  if (req.method !== "POST") return res.status(405).json({ error: "Csak POST kérés engedélyezett." });
+  const { texts, engine = "google_free", deeplKey = "", deeplPlan = "developer" } = req.body || {};
+  if (!Array.isArray(texts) || !texts.length || texts.length > 40 ||
+      texts.some((text) => typeof text !== "string") || texts.join("").length > 20000) {
+    return res.status(400).json({ error: "Adj meg 1–40 feliratsort, összesen legfeljebb 20 ezer karakterrel." });
   }
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Csak POST kérés engedélyezett." });
+  // Old Gemini/OpenAI settings can never trigger billable model calls.
+  if (!["google_free", "deepl"].includes(engine)) {
+    return res.status(400).json({ error: "Csak az ingyenes Google és az opcionális DeepL használható." });
   }
-
-  const { texts, engine = "google_free", apiKey = "", model = "" } = req.body || {};
-  if (!Array.isArray(texts) || texts.length === 0) {
-    return res.status(400).json({ error: "Hiányzik a lefordítandó szöveglista." });
-  }
-
-  const cleanTexts = texts.slice(0, 40).map((t) => String(t || "").trim());
-  const effectiveKey =
-    apiKey ||
-    (engine === "gemini" ? process.env.GEMINI_API_KEY || "" : "") ||
-    (engine === "openai" ? process.env.OPENAI_API_KEY || "" : "");
-
-  const chosenEngine =
-    (engine === "gemini" || engine === "openai") && !effectiveKey
-      ? "google_free"
-      : engine;
-
   try {
-    if (chosenEngine === "gemini" || chosenEngine === "openai") {
-      const translated =
-        chosenEngine === "gemini"
-          ? await translateWithGemini(cleanTexts, effectiveKey, model)
-          : await translateWithOpenAi(cleanTexts, effectiveKey, model);
-      return res.status(200).json({ engine: chosenEngine, translations: translated, failed: 0 });
+    if (engine === "deepl") {
+      const translations = await translateWithDeepL(texts, deeplKey, deeplPlan);
+      return res.status(200).json({ engine: "deepl", translations, failed: 0 });
     }
-    const google = await translateWithGoogleFree(cleanTexts);
-    return res.status(200).json({ engine: "google_free", ...google });
-  } catch (err) {
-    // An AI error falls back to free Google Translate so the user still gets subtitles.
-    if (chosenEngine === "google_free") {
-      return res.status(502).json({ error: err?.message || "A fordítás nem sikerült." });
-    }
-    try {
-      const fallback = await translateWithGoogleFree(cleanTexts);
-      return res.status(200).json({
-        engine: "google_free",
-        fallbackWarning: err?.message || "AI hiba, automatikus váltás Google fordítóra.",
-        ...fallback
-      });
-    } catch (err2) {
-      return res.status(502).json({
-        error: err2?.message || err?.message || "A fordítás nem sikerült."
-      });
-    }
+    return res.status(200).json({ engine: "google_free", ...await translateWithGoogleFree(texts) });
+  } catch (error) {
+    return res.status(502).json({ error: error.message || "A fordítás nem sikerült." });
   }
 }
