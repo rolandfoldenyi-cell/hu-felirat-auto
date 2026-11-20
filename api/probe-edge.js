@@ -56,33 +56,69 @@ function findSegments(obj) {
   walk(obj);
   return segs;
 }
+function extractObject(text, marker) {
+  const i = text.indexOf(marker);
+  if (i === -1) return null;
+  const s = text.indexOf("{", i + marker.length - 1);
+  if (s === -1) return null;
+  let depth = 0, inStr = false, esc = false;
+  for (let k = s; k < text.length; k++) {
+    const ch = text[k];
+    if (esc) { esc = false; continue; }
+    if (ch === "\\") { esc = true; continue; }
+    if (ch === '"') { inStr = !inStr; continue; }
+    if (inStr) continue;
+    if (ch === "{") depth++;
+    else if (ch === "}") { depth--; if (depth === 0) { try { return JSON.parse(text.slice(s, k + 1)); } catch (e) { return null; } } }
+  }
+  return null;
+}
+async function getTranscript(ctx, params, vd, v, out) {
+  const headers = { "Content-Type": "application/json", "User-Agent": UA_WEB, "X-YouTube-Client-Name": "1", "X-YouTube-Client-Version": ctx.client.clientVersion, Origin: "https://www.youtube.com", Referer: "https://www.youtube.com/watch?v=" + v };
+  if (vd) headers["X-Goog-Visitor-Id"] = vd;
+  const r2 = await tfetch("https://www.youtube.com/youtubei/v1/get_transcript?prettyPrint=false", { method: "POST", headers, body: JSON.stringify({ context: ctx, params }) });
+  out.gt = r2.status;
+  const j2 = await r2.json().catch(() => null);
+  const segs = findSegments(j2);
+  out.segs = segs.length;
+  if (segs[0]) out.first = segs[0].t.slice(0, 30);
+  if (!segs.length && j2 && j2.error) out.gtErr = String(j2.error.message || j2.error.status || "").slice(0, 80);
+}
 async function probePanel(v) {
   const out = { c: "next+get_transcript" };
-  const ver = "2.20251119.01.00";
-  const headers = { "Content-Type": "application/json", "User-Agent": UA_WEB, "X-YouTube-Client-Name": "1", "X-YouTube-Client-Version": ver, Origin: "https://www.youtube.com" };
-  const ctx = { client: { clientName: "WEB", clientVersion: ver, hl: "en", gl: "US" } };
+  const ctx = { client: { clientName: "WEB", clientVersion: "2.20251119.01.00", hl: "en", gl: "US" } };
   try {
-    const r = await tfetch("https://www.youtube.com/youtubei/v1/next?prettyPrint=false", { method: "POST", headers, body: JSON.stringify({ videoId: v, context: ctx }) });
+    const r = await tfetch("https://www.youtube.com/youtubei/v1/next?prettyPrint=false", { method: "POST", headers: { "Content-Type": "application/json", "User-Agent": UA_WEB, "X-YouTube-Client-Name": "1", "X-YouTube-Client-Version": ctx.client.clientVersion, Origin: "https://www.youtube.com" }, body: JSON.stringify({ videoId: v, context: ctx }) });
     const txt = await r.text();
     out.next = r.status + ":" + txt.length;
-    let m = txt.match(/"getTranscriptEndpoint":\{"params":"([^"]+)"/);
-    if (!m) {
-      const w = await tfetch("https://www.youtube.com/watch?v=" + v + "&hl=en", { headers: { "User-Agent": UA_WEB, "Accept-Language": "en-US,en;q=0.9", Cookie: "CONSENT=YES+cb; SOCS=CAI" } });
-      const html = await w.text();
-      out.watch = w.status + ":" + html.length;
-      m = html.match(/"getTranscriptEndpoint":\{"params":"([^"]+)"/);
-      if (m) out.paramsFrom = "watch";
-    } else {
-      out.paramsFrom = "next";
-    }
+    const vd = (txt.match(/"visitorData":"([^"]+)"/) || [])[1];
+    const cver = (txt.match(/"key":"cver","value":"([^"]+)"/) || [])[1];
+    out.vd = Boolean(vd);
+    if (cver) { out.cver = cver; ctx.client.clientVersion = cver; }
+    if (vd) ctx.client.visitorData = vd;
+    const m = txt.match(/"getTranscriptEndpoint":\{"params":"([^"]+)"/);
     if (!m) return out;
-    const r2 = await tfetch("https://www.youtube.com/youtubei/v1/get_transcript?prettyPrint=false", { method: "POST", headers, body: JSON.stringify({ context: ctx, params: m[1] }) });
-    out.gt = r2.status;
-    const j2 = await r2.json().catch(() => null);
-    const segs = findSegments(j2);
-    out.segs = segs.length;
-    if (segs[0]) out.first = segs[0].t.slice(0, 30);
-    if (!segs.length && j2 && j2.error) out.gtErr = String(j2.error.message || j2.error.status || "").slice(0, 80);
+    await getTranscript(ctx, m[1], vd, v, out);
+  } catch (e) {
+    out.err = String((e && e.message) || e).slice(0, 80);
+  }
+  return out;
+}
+async function probeWatchPanel(v) {
+  const out = { c: "watch+get_transcript" };
+  try {
+    const w = await tfetch("https://www.youtube.com/watch?v=" + v + "&hl=en&gl=US", { headers: { "User-Agent": UA_WEB, "Accept-Language": "en-US,en;q=0.9", Cookie: "CONSENT=YES+cb; SOCS=CAI" } });
+    const html = await w.text();
+    out.watch = w.status + ":" + html.length;
+    const ps = html.match(/"playabilityStatus":\{"status":"([A-Z_]+)"/);
+    if (ps) out.st = ps[1];
+    const ctx = extractObject(html, '"INNERTUBE_CONTEXT":');
+    const vd = (html.match(/"VISITOR_DATA":"([^"]+)"/) || [])[1];
+    const m = html.match(/"getTranscriptEndpoint":\{"params":"([^"]+)"/);
+    out.ctx = Boolean(ctx); out.vd = Boolean(vd); out.params = Boolean(m);
+    if (!ctx || !m) return out;
+    out.cver = ctx.client && ctx.client.clientVersion;
+    await getTranscript(ctx, m[1], vd, v, out);
   } catch (e) {
     out.err = String((e && e.message) || e).slice(0, 80);
   }
@@ -97,12 +133,13 @@ async function probeAll(vids, only) {
       rows.push(await probePlayer(v, name, c));
     }
     if (!only || only.includes("PANEL")) rows.push(await probePanel(v));
+    if (!only || only.includes("WATCHPANEL")) rows.push(await probeWatchPanel(v));
     results[v] = rows;
   }
   return results;
 }
 
-export const config = { runtime: "edge" };
+export const config = { runtime: "edge", regions: ["fra1"] };
 export default async function handler(request) {
   const url = new URL(request.url);
   const vids = String(url.searchParams.get("v") || "BwwQaiAkus4,dQw4w9WgXcQ,arj7oStGLkU").split(",").filter(Boolean).slice(0, 4);
