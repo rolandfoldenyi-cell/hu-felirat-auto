@@ -1,5 +1,10 @@
-// Serverless function: extracts and merges YouTube subtitle cues automatically.
-// Zero external npm dependencies (uses Node 20 built-in fetch).
+// Serverless function: fetches YouTube caption tracks and merges the cues.
+// No npm dependencies (Node 22 built-in fetch).
+// Every attempt is recorded in `diag`, written to the Vercel Runtime Log
+// and returned in the error response, so a failure always has a visible reason.
+
+const LOG = "[captions]";
+const YT_TIMEOUT_MS = 8000;
 
 const VIDEO_ID_PATTERNS = [
   /(?:youtube\.com\/watch\?(?:.*&)?v=)([a-zA-Z0-9_-]{11})/,
@@ -9,6 +14,48 @@ const VIDEO_ID_PATTERNS = [
   /(?:youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})/,
   /^([a-zA-Z0-9_-]{11})$/
 ];
+
+const INNERTUBE_CLIENTS = {
+  ANDROID: {
+    client: {
+      clientName: "ANDROID",
+      clientVersion: "20.10.38",
+      androidSdkVersion: 35,
+      osName: "Android",
+      osVersion: "15",
+      hl: "en",
+      gl: "US"
+    },
+    ua: "com.google.android.youtube/20.10.38 (Linux; U; Android 15) gzip"
+  },
+  IOS: {
+    client: {
+      clientName: "IOS",
+      clientVersion: "20.10.4",
+      deviceMake: "Apple",
+      deviceModel: "iPhone16,2",
+      osName: "iPhone",
+      osVersion: "18.3.2.22D82",
+      hl: "en",
+      gl: "US"
+    },
+    ua: "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)"
+  },
+  ANDROID_VR: {
+    client: {
+      clientName: "ANDROID_VR",
+      clientVersion: "1.62.27",
+      deviceMake: "Oculus",
+      deviceModel: "Quest 3",
+      androidSdkVersion: 32,
+      osName: "Android",
+      osVersion: "12L",
+      hl: "en",
+      gl: "US"
+    },
+    ua: "com.google.android.apps.youtube.vr.oculus/1.62.27 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"
+  }
+};
 
 function extractVideoId(input) {
   if (!input || typeof input !== "string") return null;
@@ -45,81 +92,123 @@ function parseTrackArray(arr) {
     const baseUrl = String(obj.baseUrl || "").replace(/\\u0026/g, "&");
     const langCode = String(obj.languageCode || "");
     if (!baseUrl || !langCode) continue;
-    const langName =
-      obj.name?.simpleText ||
-      obj.name?.runs?.[0]?.text ||
-      langCode;
+    const langName = obj.name?.simpleText || obj.name?.runs?.[0]?.text || langCode;
     const isAuto = obj.kind === "asr";
     tracks.push({ baseUrl, langCode, langName, isAuto });
   }
   return tracks;
 }
 
-async function fetchViaInnerTube(videoId, clientType) {
-  const clientConfig =
-    clientType === "IOS"
-      ? {
-          client: {
-            clientName: "IOS",
-            clientVersion: "20.10.4",
-            deviceModel: "iPhone16,2",
-            hl: "en",
-            gl: "US"
-          },
-          ua: "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3 like Mac OS X)"
-        }
-      : {
-          client: {
-            clientName: "ANDROID",
-            clientVersion: "20.10.38",
-            androidSdkVersion: 35,
-            hl: "en",
-            gl: "US"
-          },
-          ua: "com.google.android.youtube/20.10.38 (Linux; U; Android 15) gzip"
-        };
+// Marks the attempt when YouTube refused it as bot traffic or age-gated it.
+function classifyPlayability(entry, status, reason) {
+  const text = `${status || ""} ${reason || ""}`;
+  if (/not a bot|protect our community/i.test(text)) entry.blocked = true;
+  if (/confirm your age|age-restricted|inappropriate for some users/i.test(text)) {
+    entry.ageRestricted = true;
+  }
+  return entry;
+}
 
+async function fetchViaInnerTube(videoId, clientType, diag) {
+  const cfg = INNERTUBE_CLIENTS[clientType];
+  const entry = { step: `innertube:${clientType}` };
+  diag.push(entry);
   try {
-    const resp = await fetch(
-      "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "User-Agent": clientConfig.ua,
-          "Accept-Language": "en-US,en;q=0.9"
-        },
-        body: JSON.stringify({
-          videoId,
-          context: { client: clientConfig.client }
-        })
-      }
-    );
+    const resp = await fetch("https://www.youtube.com/youtubei/v1/player?prettyPrint=false", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "User-Agent": cfg.ua,
+        "Accept-Language": "en-US,en;q=0.9"
+      },
+      body: JSON.stringify({ videoId, context: { client: cfg.client } }),
+      signal: AbortSignal.timeout(YT_TIMEOUT_MS)
+    });
+    entry.http = resp.status;
+    if (resp.status === 429) entry.blocked = true;
     if (!resp.ok) return null;
+
     const data = await resp.json();
-    const tracks = parseTrackArray(
-      data?.captions?.playerCaptionsTracklistRenderer?.captionTracks
-    );
-    const title = data?.videoDetails?.title || "";
-    const author = data?.videoDetails?.author || "";
-    return { tracks, title, author };
-  } catch {
+    const ps = data?.playabilityStatus || {};
+    const tracks = parseTrackArray(data?.captions?.playerCaptionsTracklistRenderer?.captionTracks);
+    entry.playability = ps.status || null;
+    if (ps.reason) entry.reason = String(ps.reason).slice(0, 160);
+    entry.tracks = tracks.length;
+    classifyPlayability(entry, ps.status, ps.reason);
+
+    return {
+      tracks,
+      title: data?.videoDetails?.title || "",
+      author: data?.videoDetails?.author || ""
+    };
+  } catch (err) {
+    entry.error = String(err?.message || err).slice(0, 160);
     return null;
   }
 }
 
-async function fetchViaWatchPage(videoId) {
+function extractJsonArrayAfter(html, marker) {
+  const idx = html.indexOf(marker);
+  if (idx === -1) return null;
+  const arrStart = html.indexOf("[", idx);
+  if (arrStart === -1) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = arrStart; i < html.length; i++) {
+    const c = html[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (c === "\\") {
+      escape = true;
+      continue;
+    }
+    if (c === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (!inString) {
+      if (c === "[") depth++;
+      else if (c === "]") {
+        depth--;
+        if (depth === 0) return JSON.parse(html.slice(arrStart, i + 1));
+      }
+    }
+  }
+  return null;
+}
+
+async function fetchViaWatchPage(videoId, diag) {
+  const entry = { step: "watchpage" };
+  diag.push(entry);
   try {
     const resp = await fetch(`https://www.youtube.com/watch?v=${videoId}&hl=en`, {
       headers: {
         "User-Agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         "Accept-Language": "en-US,en;q=0.9",
-        Cookie: "CONSENT=YES+cb"
-      }
+        Cookie: "CONSENT=YES+cb; SOCS=CAI"
+      },
+      signal: AbortSignal.timeout(YT_TIMEOUT_MS)
     });
+    entry.http = resp.status;
+    if (resp.status === 429) entry.blocked = true;
     if (!resp.ok) return null;
+
     const html = await resp.text();
+    if (/consent\.youtube\.com/.test(resp.url)) entry.consentWall = true;
+
+    const psMatch = html.match(
+      /"playabilityStatus":\{"status":"([A-Z_]+)"(?:,"reason":"((?:[^"\\]|\\.)*)")?/
+    );
+    if (psMatch) {
+      entry.playability = psMatch[1];
+      if (psMatch[2]) entry.reason = psMatch[2].slice(0, 160);
+      classifyPlayability(entry, psMatch[1], psMatch[2]);
+    }
 
     let title = "";
     const titleMatch = html.match(/<title>(.*?)<\/title>/i);
@@ -127,96 +216,99 @@ async function fetchViaWatchPage(videoId) {
       title = decodeHtmlEntities(titleMatch[1].replace(/\s*-\s*YouTube\s*$/i, ""));
     }
 
-    const marker = '"captionTracks":';
-    const idx = html.indexOf(marker);
-    if (idx === -1) return { tracks: [], title, author: "" };
-
-    const arrStart = html.indexOf("[", idx);
-    if (arrStart === -1) return { tracks: [], title, author: "" };
-
-    let depth = 0;
-    let inString = false;
-    let escape = false;
-    let arrEnd = -1;
-
-    for (let i = arrStart; i < html.length; i++) {
-      const c = html[i];
-      if (escape) {
-        escape = false;
-        continue;
-      }
-      if (c === "\\") {
-        escape = true;
-        continue;
-      }
-      if (c === '"') {
-        inString = !inString;
-        continue;
-      }
-      if (!inString) {
-        if (c === "[") depth++;
-        else if (c === "]") {
-          depth--;
-          if (depth === 0) {
-            arrEnd = i;
-            break;
-          }
-        }
-      }
-    }
-
-    if (arrEnd === -1) return { tracks: [], title, author: "" };
-    const rawTracks = JSON.parse(html.slice(arrStart, arrEnd + 1));
-    return { tracks: parseTrackArray(rawTracks), title, author: "" };
-  } catch {
+    const rawTracks = extractJsonArrayAfter(html, '"captionTracks":');
+    const tracks = parseTrackArray(rawTracks);
+    entry.tracks = tracks.length;
+    return { tracks, title, author: "" };
+  } catch (err) {
+    entry.error = String(err?.message || err).slice(0, 160);
     return null;
   }
 }
 
-async function fetchViaSupadata(videoId, supadataKey) {
-  if (!supadataKey) return null;
+function supadataCuesFromContent(content) {
+  return content
+    .map((item) => {
+      const start = Number(item.offset || 0) / 1000;
+      const dur = Math.max(Number(item.duration || 3000) / 1000, 0.6);
+      return { start, end: start + dur, text: decodeHtmlEntities(String(item.text || "")) };
+    })
+    .filter((c) => c.text);
+}
+
+// Supadata fallback (supadata.ai). mode=native: only existing YouTube captions,
+// 1 credit per video, never the expensive AI transcription.
+async function fetchViaSupadata(videoId, supadataKey, preferredLang, diag) {
+  const entry = { step: "supadata" };
+  diag.push(entry);
+  const headers = { "x-api-key": supadataKey };
+  const params = new URLSearchParams({
+    url: `https://www.youtube.com/watch?v=${videoId}`,
+    mode: "native"
+  });
+  if (preferredLang) params.set("lang", preferredLang);
+
   try {
-    const resp = await fetch(
-      `https://api.supadata.ai/v1/youtube/transcript?videoId=${encodeURIComponent(videoId)}`,
-      {
-        headers: {
-          "x-api-key": supadataKey
+    const resp = await fetch(`https://api.supadata.ai/v1/transcript?${params}`, {
+      headers,
+      signal: AbortSignal.timeout(25000)
+    });
+    entry.http = resp.status;
+    let data = await resp.json().catch(() => null);
+
+    // Long videos are processed as an async job: poll until it completes.
+    if (resp.status === 202 && data?.jobId) {
+      entry.jobId = data.jobId;
+      const deadline = Date.now() + 35000;
+      let done = false;
+      while (!done && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 1000));
+        const jr = await fetch(
+          `https://api.supadata.ai/v1/transcript/${encodeURIComponent(data.jobId)}`,
+          { headers, signal: AbortSignal.timeout(10000) }
+        );
+        const jd = await jr.json().catch(() => null);
+        if (jd?.status === "completed") {
+          data = jd.result || jd;
+          done = true;
+        } else if (jd?.status === "failed" || !jr.ok) {
+          entry.error = String(jd?.error?.message || jd?.error || `job HTTP ${jr.status}`).slice(0, 160);
+          return null;
         }
       }
-    );
-    if (!resp.ok) return null;
-    const data = await resp.json();
-    const content = Array.isArray(data?.content) ? data.content : [];
-    if (!content.length) return null;
-    const cues = content
-      .map((item) => {
-        const start = Number(item.offset || 0) / 1000;
-        const dur = Math.max(Number(item.duration || 3000) / 1000, 0.6);
-        return {
-          start,
-          end: start + dur,
-          text: decodeHtmlEntities(String(item.text || ""))
-        };
-      })
-      .filter((c) => c.text);
+      if (!done) {
+        entry.error = "A Supadata feldolgozás nem készült el időben.";
+        return null;
+      }
+    } else if (resp.status === 206) {
+      entry.error = "A Supadata szerint ehhez a videóhoz nincs felirat.";
+      return null;
+    } else if (!resp.ok) {
+      const msg = data?.message || data?.details || data?.error || `HTTP ${resp.status}`;
+      entry.error = String(typeof msg === "string" ? msg : JSON.stringify(msg)).slice(0, 160);
+      return null;
+    }
 
-    const langCode = String(data.lang || "en");
+    const content = Array.isArray(data?.content) ? data.content : [];
+    entry.segments = content.length;
+    if (!content.length) return null;
+
+    const langCode = String(data.lang || content[0]?.lang || "en");
     return {
-      cues: mergeShortCues(cues),
+      cues: mergeShortCues(supadataCuesFromContent(content)),
       langCode,
       langName: langCode.toUpperCase(),
       isAuto: false
     };
-  } catch {
+  } catch (err) {
+    entry.error = String(err?.message || err).slice(0, 160);
     return null;
   }
 }
 
 function selectBestTrack(tracks, preferredLang) {
   if (preferredLang) {
-    const exact = tracks.find(
-      (t) => t.langCode.toLowerCase() === preferredLang.toLowerCase()
-    );
+    const exact = tracks.find((t) => t.langCode.toLowerCase() === preferredLang.toLowerCase());
     if (exact) return exact;
   }
   return (
@@ -276,40 +368,51 @@ function parseXmlCaptions(xml) {
   return cues;
 }
 
-async function downloadTrackCues(baseUrl) {
+async function downloadTrackCues(baseUrl, diag) {
+  const ua = "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 Chrome/131.0.0.0 Mobile Safari/537.36";
   const json3Url = baseUrl.includes("fmt=")
     ? baseUrl.replace(/fmt=[^&]+/, "fmt=json3")
     : `${baseUrl}&fmt=json3`;
 
+  const jsonEntry = { step: "timedtext:json3" };
+  diag.push(jsonEntry);
   try {
     const resp = await fetch(json3Url, {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 Chrome/131.0.0.0 Mobile Safari/537.36"
-      }
+      headers: { "User-Agent": ua },
+      signal: AbortSignal.timeout(YT_TIMEOUT_MS)
     });
+    jsonEntry.http = resp.status;
+    if (resp.status === 429) jsonEntry.blocked = true;
     if (resp.ok) {
       const text = await resp.text();
+      jsonEntry.bytes = text.length;
       if (text.trim().startsWith("{")) {
         const parsed = parseJson3(text);
+        jsonEntry.cues = parsed.length;
         if (parsed.length > 0) return parsed;
       }
     }
-  } catch {
-    // Fallback to XML below
+  } catch (err) {
+    jsonEntry.error = String(err?.message || err).slice(0, 160);
   }
 
+  const xmlEntry = { step: "timedtext:xml" };
+  diag.push(xmlEntry);
   try {
     const resp = await fetch(baseUrl, {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 Chrome/131.0.0.0 Mobile Safari/537.36"
-      }
+      headers: { "User-Agent": ua },
+      signal: AbortSignal.timeout(YT_TIMEOUT_MS)
     });
+    xmlEntry.http = resp.status;
+    if (resp.status === 429) xmlEntry.blocked = true;
     if (!resp.ok) return [];
     const xml = await resp.text();
-    return parseXmlCaptions(xml);
-  } catch {
+    xmlEntry.bytes = xml.length;
+    const parsed = parseXmlCaptions(xml);
+    xmlEntry.cues = parsed.length;
+    return parsed;
+  } catch (err) {
+    xmlEntry.error = String(err?.message || err).slice(0, 160);
     return [];
   }
 }
@@ -352,56 +455,109 @@ function mergeShortCues(raw) {
   return merged;
 }
 
+// Turns the attempt log into one Hungarian sentence for the app's status line.
+function describeFailure(diag, hadSupadataKey) {
+  const yt = diag.filter((d) => d.step !== "supadata");
+  const supa = diag.find((d) => d.step === "supadata");
+  const supaNote = supa?.error ? ` Supadata: ${supa.error}` : "";
+
+  if (yt.some((d) => d.blocked)) {
+    if (hadSupadataKey) {
+      return {
+        reason: "youtube_blocked",
+        status: 502,
+        message:
+          "A YouTube letiltotta a felirat lekérését a Vercel szerveréről, és a Supadata tartalék sem adott feliratot." +
+          supaNote
+      };
+    }
+    return {
+      reason: "youtube_blocked",
+      status: 502,
+      message:
+        "A YouTube letiltotta a felirat lekérését a Vercel szerveréről („Sign in to confirm you're not a bot”). " +
+        "Ez az adatközponti IP-cím miatt van, nem az app hibája. Megoldás: Beállítások → Haladó / Tartalék " +
+        "feliratletöltő → ingyenes Supadata API-kulcs (supadata.ai)."
+    };
+  }
+  if (yt.some((d) => d.ageRestricted)) {
+    return {
+      reason: "age_restricted",
+      status: 403,
+      message: "Korhatáros videó: a YouTube bejelentkezést kér, ezért a szerver nem éri el a feliratát." + supaNote
+    };
+  }
+  if (yt.some((d) => d.playability === "ERROR" || d.playability === "UNPLAYABLE")) {
+    return {
+      reason: "unavailable",
+      status: 404,
+      message: "A videó nem érhető el (privát, törölt vagy régióhoz kötött)." + supaNote
+    };
+  }
+  if (yt.some((d) => (d.tracks || 0) > 0)) {
+    return {
+      reason: "download_failed",
+      status: 502,
+      message:
+        "A feliratsávok listája megjött, de a letöltésük üres választ adott (a YouTube korlátozza a szervert)." +
+        supaNote
+    };
+  }
+  if (yt.some((d) => d.playability === "OK")) {
+    return {
+      reason: "no_captions",
+      status: 404,
+      message: "Ehhez a videóhoz nincs felirat a YouTube-on (sem kézi, sem automatikus)." + supaNote
+    };
+  }
+  return {
+    reason: "unknown",
+    status: 502,
+    message: "Nem sikerült letölteni a feliratot ehhez a videóhoz." + supaNote
+  };
+}
+
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Cache-Control", "no-store");
 
   if (req.method === "OPTIONS") {
     return res.status(204).end();
   }
 
-  const input =
-    req.method === "POST"
-      ? req.body?.videoId || req.body?.url
-      : req.query?.videoId || req.query?.url;
-  const preferredLang =
-    req.method === "POST" ? req.body?.lang : req.query?.lang;
-  const supadataKey =
-    req.method === "POST"
-      ? req.body?.supadataKey || process.env.SUPADATA_API_KEY || ""
-      : process.env.SUPADATA_API_KEY || "";
+  const body = req.method === "POST" && req.body && typeof req.body === "object" ? req.body : {};
+  const query = req.query || {};
+  const input = body.videoId || body.url || query.videoId || query.url;
+  const preferredLang = body.lang || query.lang || "";
+  const supadataKey = body.supadataKey || process.env.SUPADATA_API_KEY || "";
 
   const videoId = extractVideoId(input);
   if (!videoId) {
     return res.status(400).json({ error: "Érvénytelen YouTube-link vagy videóazonosító." });
   }
 
+  const diag = [];
+  const region = process.env.VERCEL_REGION || "local";
   let title = "";
   let author = "";
   let tracks = [];
 
-  // Tier 1: InnerTube ANDROID
-  const androidRes = await fetchViaInnerTube(videoId, "ANDROID");
-  if (androidRes) {
-    title = androidRes.title || title;
-    author = androidRes.author || author;
-    if (androidRes.tracks.length > 0) tracks = androidRes.tracks;
-  }
-
-  // Tier 2: InnerTube IOS
-  if (tracks.length === 0) {
-    const iosRes = await fetchViaInnerTube(videoId, "IOS");
-    if (iosRes) {
-      title = title || iosRes.title;
-      author = author || iosRes.author;
-      if (iosRes.tracks.length > 0) tracks = iosRes.tracks;
+  for (const clientType of ["ANDROID", "IOS", "ANDROID_VR"]) {
+    const r = await fetchViaInnerTube(videoId, clientType, diag);
+    if (r) {
+      title = title || r.title;
+      author = author || r.author;
+      if (r.tracks.length > 0) {
+        tracks = r.tracks;
+        break;
+      }
     }
   }
 
-  // Tier 3: Watch Page HTML
   if (tracks.length === 0) {
-    const watchRes = await fetchViaWatchPage(videoId);
+    const watchRes = await fetchViaWatchPage(videoId, diag);
     if (watchRes) {
       title = title || watchRes.title;
       if (watchRes.tracks.length > 0) tracks = watchRes.tracks;
@@ -410,59 +566,57 @@ export default async function handler(req, res) {
 
   if (tracks.length > 0) {
     const chosen = selectBestTrack(tracks, preferredLang);
-    const rawCues = await downloadTrackCues(chosen.baseUrl);
+    const rawCues = await downloadTrackCues(chosen.baseUrl, diag);
     if (rawCues.length > 0) {
       const cues = mergeShortCues(rawCues);
-      const alreadyHungarian = chosen.langCode.toLowerCase().startsWith("hu");
+      console.log(LOG, JSON.stringify({ videoId, region, outcome: "ok:youtube", cues: cues.length, diag }));
       return res.status(200).json({
         videoId,
         title,
         author,
+        source: "youtube",
         selectedTrack: {
           langCode: chosen.langCode,
           langName: chosen.langName,
           isAuto: chosen.isAuto
         },
-        tracks: tracks.map((t) => ({
-          langCode: t.langCode,
-          langName: t.langName,
-          isAuto: t.isAuto
-        })),
-        alreadyHungarian,
+        tracks: tracks.map((t) => ({ langCode: t.langCode, langName: t.langName, isAuto: t.isAuto })),
+        alreadyHungarian: chosen.langCode.toLowerCase().startsWith("hu"),
         cues
       });
     }
   }
 
-  // Tier 4: Optional Supadata backup
   if (supadataKey) {
-    const supaRes = await fetchViaSupadata(videoId, supadataKey);
+    const supaRes = await fetchViaSupadata(videoId, supadataKey, preferredLang, diag);
     if (supaRes && supaRes.cues.length > 0) {
-      const alreadyHungarian = supaRes.langCode.toLowerCase().startsWith("hu");
+      console.log(
+        LOG,
+        JSON.stringify({ videoId, region, outcome: "ok:supadata", cues: supaRes.cues.length, diag })
+      );
       return res.status(200).json({
         videoId,
         title,
         author,
+        source: "supadata",
         selectedTrack: {
           langCode: supaRes.langCode,
           langName: supaRes.langName,
           isAuto: supaRes.isAuto
         },
-        tracks: [
-          {
-            langCode: supaRes.langCode,
-            langName: supaRes.langName,
-            isAuto: supaRes.isAuto
-          }
-        ],
-        alreadyHungarian,
+        tracks: [{ langCode: supaRes.langCode, langName: supaRes.langName, isAuto: supaRes.isAuto }],
+        alreadyHungarian: supaRes.langCode.toLowerCase().startsWith("hu"),
         cues: supaRes.cues
       });
     }
   }
 
-  return res.status(404).json({
-    error:
-      "Nem sikerült letölteni a feliratsávot ehhez a videóhoz (lehet, hogy nincs alapfelirata, vagy a YouTube korlátozta a szerver lekérdezését). A Beállítások → Tartalék opcióval vagy egy másik videóval is megpróbálhatod."
+  const failure = describeFailure(diag, Boolean(supadataKey));
+  console.warn(LOG, JSON.stringify({ videoId, region, outcome: failure.reason, diag }));
+  return res.status(failure.status).json({
+    error: failure.message,
+    reason: failure.reason,
+    region,
+    details: diag
   });
 }
