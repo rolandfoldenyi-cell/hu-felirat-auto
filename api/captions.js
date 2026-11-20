@@ -475,9 +475,9 @@ function describeFailure(diag, hadSupadataKey) {
       reason: "youtube_blocked",
       status: 502,
       message:
-        "A YouTube letiltotta a felirat lekérését a Vercel szerveréről („Sign in to confirm you're not a bot”). " +
-        "Ez az adatközponti IP-cím miatt van, nem az app hibája. Megoldás: Beállítások → Haladó / Tartalék " +
-        "feliratletöltő → ingyenes Supadata API-kulcs (supadata.ai)."
+        "A YouTube ennél a videónál nem engedi a felirat letöltését a Vercel szerveréről („Sign in to confirm you're not a bot”), " +
+        "mert a kérés adatközponti IP-címről jön. Megoldás: ingyenes Supadata API-kulcs (supadata.ai, havi 100 videó) a " +
+        "Beállítások → Haladó / Tartalék feliratletöltő mezőben."
     };
   }
   if (yt.some((d) => d.ageRestricted)) {
@@ -554,9 +554,12 @@ export default async function handler(req, res) {
         break;
       }
     }
+    // A bot check is tied to the server's IP: every other client and the watch page get the
+    // same answer (verified on 2026-11-20 from iad1, fra1 and hnd1), so skip straight on.
+    if (diag[diag.length - 1]?.blocked) break;
   }
 
-  if (tracks.length === 0) {
+  if (tracks.length === 0 && !diag.some((d) => d.blocked)) {
     const watchRes = await fetchViaWatchPage(videoId, diag);
     if (watchRes) {
       title = title || watchRes.title;
