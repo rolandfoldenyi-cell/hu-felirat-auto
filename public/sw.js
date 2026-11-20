@@ -1,4 +1,4 @@
-const CACHE_NAME = "hu-felirat-auto-v1";
+const CACHE_NAME = "hu-felirat-auto-v2";
 const APP_SHELL = [
   "/",
   "/index.html",

@@ -198,6 +198,115 @@ function engineLabel(engine) {
   return "Google Translate";
 }
 
+// ---------------- Google Translate directly from the phone ----------------
+// translate.googleapis.com accepts cross-origin requests, so the free engine runs on the
+// phone's own connection instead of the shared Vercel IP that Google rate-limits.
+// /api/translate stays as the fallback.
+
+const GT_URL = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=hu&dt=t&q=";
+
+async function googleRaw(text, signal) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const resp = await fetch(GT_URL + encodeURIComponent(text), { signal });
+    if (resp.ok) {
+      const data = await resp.json();
+      const segments = Array.isArray(data?.[0]) ? data[0] : [];
+      return segments.map((s) => (Array.isArray(s) ? s[0] || "" : "")).join("");
+    }
+    if (resp.status !== 429 && resp.status < 500) break;
+    await new Promise((r) => setTimeout(r, 700 * (attempt + 1)));
+  }
+  throw new Error("A Google Fordító nem válaszolt.");
+}
+
+// Lines of three or more words: if one comes back unchanged, it was not translated.
+const MULTIWORD = /\p{L}{2,}[^\p{L}]+\p{L}{2,}[^\p{L}]+\p{L}{2,}/u;
+const untranslatedIdx = (lines, out) =>
+  lines
+    .map((src, i) => (MULTIWORD.test(src) && out[i].trim().toLowerCase() === src.trim().toLowerCase() ? i : -1))
+    .filter((i) => i >= 0);
+
+async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i], i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
+
+// Lines are joined with plain line breaks: Google returns one output line per input line.
+async function googleBatch(lines, signal) {
+  const parts = (await googleRaw(lines.join("\n"), signal)).split("\n");
+  return parts.length === lines.length ? parts.map((p, i) => p.trim() || lines[i]) : null;
+}
+
+// Google now and then answers with the source text echoed back: unchanged lines get one
+// more try, together in a single request.
+async function translateGoogleDirect(lines, signal) {
+  let result = await googleBatch(lines, signal);
+  if (!result) {
+    result = await mapLimit(lines, 3, (line) =>
+      googleRaw(line, signal)
+        .then((t) => t.trim() || line)
+        .catch((err) => {
+          if (err.name === "AbortError") throw err;
+          return line;
+        })
+    );
+  }
+  const retryIdx = untranslatedIdx(lines, result);
+  if (retryIdx.length) {
+    await new Promise((r) => setTimeout(r, 400));
+    const again = await googleBatch(retryIdx.map((i) => lines[i]), signal).catch((err) => {
+      if (err.name === "AbortError") throw err;
+      return null;
+    });
+    if (again) {
+      retryIdx.forEach((lineIdx, k) => {
+        result[lineIdx] = again[k];
+      });
+    }
+  }
+  const failed = untranslatedIdx(lines, result).length;
+  const eligible = lines.filter((l) => MULTIWORD.test(l)).length;
+  if (eligible > 0 && failed === eligible) {
+    throw new Error("A Google Fordító egy sort sem fordított le.");
+  }
+  return { engine: "google_free", translations: result, failed };
+}
+
+async function translateBatch(texts, activeEngine, signal) {
+  if (activeEngine === "google_free") {
+    try {
+      return await translateGoogleDirect(texts, signal);
+    } catch (err) {
+      if (err.name === "AbortError") throw err;
+      console.warn("[translate] közvetlen Google-hívás sikertelen, szerveres tartalék:", err);
+    }
+  }
+  const resp = await fetch("/api/translate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    signal,
+    body: JSON.stringify({
+      texts,
+      engine: activeEngine,
+      apiKey: state.settings.apiKey,
+      model: state.settings.model
+    })
+  });
+  const data = await readJsonResponse(resp);
+  if (!resp.ok) {
+    throw new Error(data.error || "Fordítási hiba.");
+  }
+  return data;
+}
+
 function applySubtitleStyle() {
   els.btnBilingual.textContent = state.settings.bilingual ? "Kétnyelvű: BE" : "Kétnyelvű: KI";
   els.btnBilingual.classList.toggle("active", state.settings.bilingual);
@@ -357,7 +466,9 @@ async function loadVideoFromInput(rawInput, preferredLang = "") {
     const capData = await readJsonResponse(capResp);
     if (!capResp.ok) {
       if (capData.details) console.warn("[captions] részletek:", capData.details);
-      throw new Error(capData.error || "Nem sikerült letölteni a feliratot.");
+      const capErr = new Error(capData.error || "Nem sikerült letölteni a feliratot.");
+      capErr.reason = capData.reason;
+      throw capErr;
     }
 
     state.title = capData.title || `YouTube videó (${videoId})`;
@@ -382,14 +493,26 @@ async function loadVideoFromInput(rawInput, preferredLang = "") {
     }
 
     const sourceLabel = capData.selectedTrack?.langName || "";
-    await translateAllProgressive(
-      abortController.signal,
-      capData.source === "supadata" ? `${sourceLabel} (Supadata)` : sourceLabel
-    );
+    try {
+      await translateAllProgressive(
+        abortController.signal,
+        capData.source === "supadata" ? `${sourceLabel} (Supadata)` : sourceLabel
+      );
+    } catch (err) {
+      if (err.name === "AbortError") return;
+      // The captions are loaded: keep showing them in the original language.
+      setStatus(`Fordítási hiba: ${err.message || "ismeretlen hiba"}. Az eredeti felirat látszik (↻ Újra).`, {
+        error: true
+      });
+      refreshSubtitleDisplay();
+    }
   } catch (err) {
     if (err.name === "AbortError") return;
     setStatus(err.message || "Hiba történt a felirat betöltése közben.", { error: true });
-    els.subHu.textContent = "Ehhez a videóhoz nem érkezett felirat.";
+    els.subHu.textContent =
+      err.reason === "youtube_blocked"
+        ? "A YouTube nem adta ki ennek a videónak a feliratát a szervernek (részletek lent)."
+        : "Ehhez a videóhoz nem érkezett felirat.";
     els.subHu.classList.add("placeholder");
   }
 }
@@ -456,11 +579,13 @@ async function translateAllProgressive(signal, sourceLangName) {
   const engine = state.settings.engine;
   const hasKey = Boolean(state.settings.apiKey);
   const activeEngine = (engine === "gemini" || engine === "openai") && !hasKey ? "google_free" : engine;
-  const batchSize = activeEngine === "google_free" ? 15 : 24;
+  const batchSize = activeEngine === "google_free" ? 20 : 24;
 
   let warningShown = "";
+  let failedTotal = 0;
+  let lastError = "";
   setStatus(
-    `Forrás: ${sourceLangName || "eredeti"} — fordítás (${engineLabel(activeEngine)})...`,
+    `Forrás: ${sourceLangName || "eredeti"}, fordítás (${engineLabel(activeEngine)})...`,
     { loading: true }
   );
 
@@ -469,26 +594,24 @@ async function translateAllProgressive(signal, sourceLangName) {
     const end = Math.min(i + batchSize, total);
     const slice = state.cues.slice(i, end);
 
-    const resp = await fetch("/api/translate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      signal,
-      body: JSON.stringify({
-        texts: slice.map((c) => c.original),
-        engine: activeEngine,
-        apiKey: state.settings.apiKey,
-        model: state.settings.model
-      })
-    });
-
-    const data = await readJsonResponse(resp);
-    if (!resp.ok) {
-      throw new Error(data.error || "Fordítási hiba.");
+    let data;
+    try {
+      data = await translateBatch(
+        slice.map((c) => c.original),
+        activeEngine,
+        signal
+      );
+    } catch (err) {
+      if (err.name === "AbortError") throw err;
+      // Keep the original text for this batch and carry on with the rest.
+      lastError = err.message || "ismeretlen hiba";
+      data = { engine: activeEngine, translations: [], failed: slice.length };
     }
 
     if (data.fallbackWarning && !warningShown) {
       warningShown = data.fallbackWarning;
     }
+    failedTotal += Number(data.failed) || 0;
 
     const translatedArr = Array.isArray(data.translations) ? data.translations : [];
     for (let j = 0; j < slice.length; j++) {
@@ -501,9 +624,14 @@ async function translateAllProgressive(signal, sourceLangName) {
     const usedLabel = engineLabel(data.engine || activeEngine);
     if (end < total) {
       setStatus(`Fordítás (${usedLabel}): ${end} / ${total} sor kész...`, { loading: true });
+    } else if (lastError && failedTotal >= total) {
+      throw new Error(lastError);
     } else {
       const suffix = warningShown ? " (AI hiba miatt Google tartalék)" : "";
-      setStatus(`Kész (${usedLabel}${suffix}) — ${total} sor lefordítva.`);
+      const done = failedTotal
+        ? `${total - failedTotal} / ${total} sor lefordítva, ${failedTotal} eredeti nyelven maradt (↻ Újra).`
+        : `${total} sor lefordítva.`;
+      setStatus(`Kész (${usedLabel}${suffix}): ${done}`, { error: failedTotal > 0 });
     }
   }
 }
