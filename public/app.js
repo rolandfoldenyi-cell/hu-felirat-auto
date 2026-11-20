@@ -436,9 +436,16 @@ async function loadVideoFromInput(rawInput, preferredLang = "") {
   const abortController = new AbortController();
   state.translationAbortController = abortController;
 
+  const isNewVideo = state.videoId !== videoId;
   state.videoId = videoId;
   state.cues = [];
   state.activeCueIndex = -1;
+  if (isNewVideo) {
+    // Hide the previous video's title and track list until the new captions arrive.
+    state.tracks = [];
+    els.videoMeta.hidden = true;
+    els.trackSelect.hidden = true;
+  }
 
   els.heroSection.classList.add("compact");
   els.playerCard.hidden = false;
