@@ -66,6 +66,7 @@ public final class MainActivity extends Activity {
         }
         extractor = new CaptionExtractor();
         webView = new WebView(this);
+        webView.setId(R.id.browser);
         root.addView(webView, new FrameLayout.LayoutParams(-1, -1));
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
