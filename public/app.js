@@ -1,11 +1,13 @@
 import { parseTimedSubtitles } from "/subtitle-files.js";
 import { createChromeSession, translateByPriority } from "/translation-priority.js";
 import { nativeCaptionClient } from "/native-captions.js";
+import { createTranslationCache, translateTimedCues } from "/timed-translation.js";
 
 // HU Felirat Auto PWA — Automatic YouTube caption fetch + progressive Hungarian translation
 
 const STORAGE_SETTINGS = "hufelirat_auto_settings_v2";
 const STORAGE_HISTORY = "hufelirat_auto_history_v2";
+const translationCache = createTranslationCache();
 
 const state = {
   settings: loadSettings(),
@@ -196,10 +198,11 @@ function formatTime(sec) {
   return `${m}:${String(rem).padStart(2, "0")}`;
 }
 
-function setStatus(text, { loading = false, error = false } = {}) {
+function setStatus(text, { loading = false, error = false, reason = "" } = {}) {
   els.statusSpinner.hidden = !loading;
   els.statusText.textContent = text;
   els.statusText.classList.toggle("error", error);
+  els.statusText.dataset.reason = reason;
 }
 
 // Reads a JSON API response; a non-JSON body (e.g. a Vercel 404 page) becomes a readable error.
@@ -381,7 +384,8 @@ async function restartTranslation(enableChrome = false) {
       state.chromeAttempted = true;
       els.btnEnableChrome.hidden = Boolean(state.chromeSession);
     }
-    await translateAllProgressive(controller.signal, state.sourceLangName);
+    const hasMissingTranslation = state.cues.some(cue => !cue.translated || cue.translationFailed);
+    await translateAllProgressive(controller.signal, state.sourceLangName, { ignoreCache: enableChrome || !hasMissingTranslation });
   } catch (error) {
     if (error.name !== "AbortError") setStatus(error.message, { error: true });
   }
@@ -506,7 +510,9 @@ function refreshSubtitleDisplay() {
   }
 
   els.subHu.classList.remove("placeholder");
-  els.subHu.textContent = cue.translated || cue.original;
+  els.subHu.textContent = cue.translated || (cue.translationFailed
+    ? `Eredeti felirat (fordítási hiba): ${cue.original}`
+    : `Fordítás folyamatban: ${cue.original}`);
   els.subOrig.textContent = cue.original;
   els.subOrig.hidden = !state.settings.bilingual;
 }
@@ -634,7 +640,7 @@ async function loadVideoFromInput(rawInput, preferredLang = "", allowSupadata = 
       if (err.name === "AbortError") return;
       // The captions are loaded: keep showing them in the original language.
       setStatus(`Fordítási hiba: ${err.message || "ismeretlen hiba"}. Az eredeti felirat látszik (↻ Újra).`, {
-        error: true
+        error: true, reason: "translation_failed"
       });
       refreshSubtitleDisplay();
     }
@@ -644,7 +650,7 @@ async function loadVideoFromInput(rawInput, preferredLang = "", allowSupadata = 
     if (nativeCaptionClient && !allowSupadata) {
       els.freeOptions.hidden = false;
       els.captionNotice.textContent = "A telefonos letöltés nem sikerült. Az eredeti hiba fent látható; a kézi lehetőségek tartalékként használhatók.";
-      setStatus(err.message || "A telefonos feliratletöltés nem sikerült.", { error: true });
+      setStatus(err.message || "A telefonos feliratletöltés nem sikerült.", { error: true, reason: err.reason || "extractor_error" });
       els.subHu.textContent = err.reason === "no_captions" ? "Ehhez a videóhoz nincs letölthető felirat."
         : err.reason === "youtube_blocked" ? "A YouTube a telefonos feliratkérést is korlátozta."
           : "A felirat lekérése nem sikerült. A részletek lent láthatók.";
@@ -791,68 +797,54 @@ function updateTranscriptRange(startIdx, endIdx) {
     const row = els.transcriptList.children[i];
     if (!row) continue;
     const huEl = row.querySelector(".cue-hu");
-    if (huEl && state.cues[i]?.translated) {
-      huEl.textContent = state.cues[i].translated;
+    if (huEl && state.cues[i]) {
+      huEl.textContent = state.cues[i].translated || `Eredeti felirat: ${state.cues[i].original}`;
     }
   }
 }
 
-async function translateAllProgressive(signal, sourceLangName) {
-  const total = state.cues.length;
-  const activeEngine = "browser_free";
-  const batchSize = 20;
-
-  const enginesUsed = new Set();
-  let failedTotal = 0;
-  let lastError = "";
+async function translateAllProgressive(signal, sourceLangName, { ignoreCache = false } = {}) {
+  const cues = state.cues;
   setStatus(
-    `Forrás: ${sourceLangName || "eredeti"}, fordítás (${engineLabel(activeEngine)})...`,
+    `Forrás: ${sourceLangName || "eredeti"}, magyarra fordítás...`,
     { loading: true }
   );
-
-  for (let i = 0; i < total; i += batchSize) {
-    if (signal.aborted) return;
-    const end = Math.min(i + batchSize, total);
-    const slice = state.cues.slice(i, end);
-
-    let data;
-    try {
-      data = await translateBatch(
-        slice.map((c) => c.original),
-        activeEngine,
-        signal
+  const ensureCurrent = () => {
+    signal.throwIfAborted();
+    if (state.cues !== cues) {
+      const error = new Error("Másik felirat betöltése miatt megszakítva.");
+      error.name = "AbortError";
+      throw error;
+    }
+  };
+  const result = await translateTimedCues(cues, {
+    signal, sourceLanguage: state.sourceLanguage,
+    cache: ignoreCache ? { get: () => null, set: translationCache.set, flush: translationCache.flush } : translationCache,
+    translate: texts => translateBatch(texts, "browser_free", signal),
+    onUpdate(progress) {
+      ensureCurrent();
+      for (const update of progress.updates) {
+        cues[update.index].translated = update.translated;
+        cues[update.index].translationFailed = update.translated === null;
+        updateTranscriptRange(update.index, update.index + 1);
+      }
+      refreshSubtitleDisplay();
+      if (progress.completed < progress.total) setStatus(
+        `Magyarra fordítás: ${progress.completed - progress.failed} / ${progress.total} sor kész...`, { loading: true }
       );
-    } catch (err) {
-      if (err.name === "AbortError") throw err;
-      // Keep the original text for this batch and carry on with the rest.
-      lastError = err.message || "ismeretlen hiba";
-      data = { engine: activeEngine, translations: [], failed: slice.length };
     }
-
-    for (const engine of data.engines || [data.engine]) enginesUsed.add(engine);
-    failedTotal += Number(data.failed) || 0;
-
-    const translatedArr = Array.isArray(data.translations) ? data.translations : [];
-    for (let j = 0; j < slice.length; j++) {
-      state.cues[i + j].translated = translatedArr[j] || slice[j].original;
-    }
-
-    updateTranscriptRange(i, end);
-    refreshSubtitleDisplay();
-
-    const usedLabel = engineLabel(data.engine || activeEngine);
-    if (end < total) {
-      setStatus(`Fordítás (${usedLabel}): ${end} / ${total} sor kész...`, { loading: true });
-    } else if (lastError && failedTotal >= total) {
-      throw new Error(lastError);
-    } else {
-      const suffix = enginesUsed.size > 1 ? " · több fordító" : "";
-      const done = failedTotal
-        ? `${total - failedTotal} / ${total} sor lefordítva, ${failedTotal} eredeti nyelven maradt (↻ Újra).`
-        : `${total} sor lefordítva.`;
-      setStatus(`Kész (${usedLabel}${suffix}): ${done}`, { error: failedTotal > 0 });
-    }
+  });
+  ensureCurrent();
+  if (result.failed === result.total && result.total) {
+    throw new Error(result.lastError || "Nem sikerült magyarra fordítani a feliratot.");
   }
+  const used = result.engines.length ? result.engines.map(engineLabel).join(" + ") : "helyi mentés";
+  const cached = result.cached ? ` (${result.cached} sor helyi mentésből)` : "";
+  if (result.failed) setStatus(
+    `Részben kész: ${result.translated} / ${result.total} sor magyarul; ${result.failed} sor eredeti nyelven maradt. ↻ Újra${cached}`,
+    { error: true }
+  );
+  else setStatus(`Kész (${used}): ${result.total} sor lefordítva.${cached}`);
 }
 
 // ---------------- Fullscreen ----------------
@@ -892,10 +884,10 @@ document.addEventListener("fullscreenchange", () => {
 function setupPwa() {
   if (nativeCaptionClient) {
     els.badgeInstalled.hidden = false;
-    els.badgeInstalled.textContent = "Android · 2.1.0-test1";
+    els.badgeInstalled.textContent = "Codex · 2.1.0-test2";
     els.btnInstall.hidden = true;
     const runtimeLabel = document.getElementById("runtimeLabel");
-    if (runtimeLabel) runtimeLabel.textContent = "ANDROID · 2.1.0-test1";
+    if (runtimeLabel) runtimeLabel.textContent = "ANDROID · CODEX · 2.1.0-test2";
     const notices = document.getElementById("androidNotices");
     if (notices) notices.hidden = false;
   }

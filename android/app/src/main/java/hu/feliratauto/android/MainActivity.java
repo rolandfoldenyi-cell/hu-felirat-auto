@@ -7,6 +7,7 @@ import android.content.Intent;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Bundle;
+import android.util.Log;
 import android.view.View;
 import android.view.WindowManager;
 import android.webkit.ValueCallback;
@@ -35,7 +36,7 @@ public final class MainActivity extends Activity {
     private static final String HOST = "hu-felirat-auto-seven.vercel.app";
     private static final String ORIGIN = "https://" + HOST;
     private static final Set<String> ASSETS = Set.of("index.html", "app.js", "styles.css", "manifest.json",
-        "subtitle-files.js", "translation-priority.js", "native-captions.js", "android-notices.html",
+        "subtitle-files.js", "translation-priority.js", "native-captions.js", "timed-translation.js", "android-notices.html",
         "icons/icon-192.png", "icons/icon-512.png", "icons/icon-maskable-512.png", "licenses/GPL-3.0.txt");
     private final ThreadPoolExecutor executor = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.SECONDS, new ArrayBlockingQueue<>(1));
     private CaptionExtractor extractor;
@@ -180,7 +181,12 @@ public final class MainActivity extends Activity {
             }
         }
         JSONObject result = new JSONObject();
+        String diagnostic = (error.getClass().getSimpleName() + ": " + String.valueOf(error.getMessage()))
+            .replaceAll("https?://\\S+", "[URL]");
+        if (diagnostic.length() > 220) diagnostic = diagnostic.substring(0, 220);
+        Log.w("HUCaptionExtractor", "reason=" + reason + "; " + diagnostic);
         try { result.put("id", id).put("ok", false).put("reason", reason).put("error", text)
+            .put("diagnostic", diagnostic)
             .put("extractorVersion", "0.27.1").put("nativeVersion", BuildConfig.VERSION_NAME); }
         catch (Exception ignored) {}
         return result;

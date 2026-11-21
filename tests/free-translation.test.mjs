@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createChromeSession, translateByPriority } from '../public/translation-priority.js';
 import { parseTimedSubtitles } from '../public/subtitle-files.js';
+import { createTranslationCache, translateTimedCues } from '../public/timed-translation.js';
 import translateHandler from '../api/translate.js';
 import captionsHandler from '../api/captions.js';
 import fs from 'node:fs';
@@ -152,7 +153,7 @@ test('real frontend boots against its HTML and translates without old AI keys or
   const requests=[];
   const context=vm.createContext({document,window,navigator,YT,URLSearchParams,
     AbortController,console,setTimeout,clearTimeout,setInterval,clearInterval,
-    createChromeSession,translateByPriority,parseTimedSubtitles,nativeCaptionClient:null,
+    createChromeSession,translateByPriority,parseTimedSubtitles,createTranslationCache,translateTimedCues,nativeCaptionClient:null,
     localStorage:{getItem:key=>saved.get(key)||null,setItem:(key,value)=>saved.set(key,value)},
     fetch:async(url,options)=>{
       requests.push({url,options});
@@ -165,7 +166,7 @@ test('real frontend boots against its HTML and translates without old AI keys or
   });
   const app=fs.readFileSync(new URL('../public/app.js',import.meta.url),'utf8')
     .replace(/^import[^\n]+\n/gm,'');
-  new vm.Script(app+'\nglobalThis.appUnderTest={state,loadVideoFromInput,importSubtitleText,useNativeCaptions};').runInContext(context);
+  new vm.Script(app+'\nglobalThis.appUnderTest={state,loadVideoFromInput,importSubtitleText,useNativeCaptions,restartTranslation,updateActiveSubtitle};').runInContext(context);
   assert.equal(context.appUnderTest.state.ytApiReady,true,'Already loaded YouTube API must be detected');
   await context.appUnderTest.loadVideoFromInput('dQw4w9WgXcQ');
   assert.equal(context.appUnderTest.state.cues[0].translated,magyar[0]);
@@ -177,8 +178,7 @@ test('real frontend boots against its HTML and translates without old AI keys or
   // Importing timed text translates without repeating the blocked caption request.
   const beforeImport=requests.length;
   await context.appUnderTest.importSubtitleText('1\n00:00:00,000 --> 00:00:04,000\n'+source[0],'en');
-  assert.equal(requests.length,beforeImport+1);
-  assert.equal(requests.at(-1).url.startsWith('https://translate.googleapis.com/'),true);
+  assert.equal(requests.length,beforeImport,'A successful cached line needs no new external request');
   assert.equal(context.appUnderTest.state.cues[0].translated,magyar[0]);
   assert.equal(nodes.get('freeOptions').hidden,false);
   const hungarian='1\n00:00:00,000 --> 00:00:04,000\nMár magyar felirat.';
@@ -195,8 +195,38 @@ test('real frontend boots against its HTML and translates without old AI keys or
   assert.equal(playerConfigurations.at(-1).cc_load_policy,0);
   assert.equal(context.appUnderTest.state.cues[0].translated,'Már magyar felirat.');
 
-  // An old server response must never overwrite a locally imported subtitle.
   const previousFetch=context.fetch;
+  // A failed line must not appear as a completed Hungarian translation.
+  context.fetch=async(url,options)=>{
+    requests.push({url,options});
+    if(String(url).startsWith('https://translate.googleapis.com/')) throw new Error('Fixture Google limit');
+    assert.equal(url,'/api/translate');
+    const {texts}=JSON.parse(options.body);
+    return new Response(JSON.stringify({engine:'google_free',translations:texts,failed:texts.length}));
+  };
+  await context.appUnderTest.importSubtitleText('1\n00:00:00,000 --> 00:00:04,000\n'+source[0]+'\n\n2\n00:00:05,000 --> 00:00:09,000\n'+source[1],'en');
+  assert.equal(context.appUnderTest.state.cues[0].translated,magyar[0]);
+  assert.equal(context.appUnderTest.state.cues[1].translated,null);
+  assert.equal(context.appUnderTest.state.cues[1].translationFailed,true);
+  assert.match(nodes.get('statusText').textContent,/Részben kész/);
+  context.appUnderTest.updateActiveSubtitle(6);
+  assert.match(nodes.get('subHu').textContent,/Eredeti felirat \(fordítási hiba\)/);
+  const beforeRetry=requests.length;
+  context.fetch=async(url,options)=>{
+    requests.push({url,options});
+    assert.ok(String(url).startsWith('https://translate.googleapis.com/'));
+    assert.equal(new URL(url).searchParams.get('q'),source[1]);
+    return new Response(JSON.stringify([[[magyar[1],source[1]]]]));
+  };
+  await context.appUnderTest.restartTranslation();
+  assert.equal(requests.length,beforeRetry+1);
+  assert.equal(context.appUnderTest.state.cues[1].translated,magyar[1]);
+  assert.equal(context.appUnderTest.state.cues[1].start,5);
+  assert.equal(context.appUnderTest.state.cues[1].end,9);
+  assert.match(nodes.get('statusText').textContent,/^Kész/);
+  context.fetch=previousFetch;
+
+  // An old server response must never overwrite a locally imported subtitle.
   let finishRequest;
   context.fetch=async(url,options)=>url==='/api/captions'
     ? await new Promise(resolve=>{finishRequest=resolve;}) : previousFetch(url,options);
@@ -207,7 +237,6 @@ test('real frontend boots against its HTML and translates without old AI keys or
     cues:[{start:0,end:1,text:'Stale server text'}]})));
   await pending;
   assert.equal(context.appUnderTest.state.cues[0].translated,'Már magyar felirat.');
-
   // Android follows the same automatic translation/display path, without the server caption API.
   context.fetch=previousFetch;
   const deviceCalls=[];
@@ -220,8 +249,7 @@ test('real frontend boots against its HTML and translates without old AI keys or
   await context.appUnderTest.loadVideoFromInput('dQw4w9WgXcQ');
   assert.equal(deviceCalls.length,1);
   assert.equal(deviceCalls[0].options.lang,'en');
-  assert.equal(requests.length,beforeDevice+1);
-  assert.equal(requests.at(-1).url.startsWith('https://translate.googleapis.com/'),true);
+  assert.equal(requests.length,beforeDevice);
   assert.equal(context.appUnderTest.state.cues[0].translated,magyar[0]);
   assert.equal(context.appUnderTest.state.cues[0].start,1.25);
   assert.equal(context.appUnderTest.state.cues[0].end,3.5);

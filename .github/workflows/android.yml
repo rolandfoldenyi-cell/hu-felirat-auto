@@ -32,7 +32,7 @@ jobs:
       - name: Name APK and record checksum
         run: |
           mkdir -p dist
-          cp android/app/build/outputs/apk/debug/app-debug.apk dist/HU-Felirat-Auto-2.1.0-test1.apk
+          cp android/app/build/outputs/apk/debug/app-debug.apk dist/HU-Felirat-Codex-2.1.0-test2.apk
           sha256sum dist/*.apk > dist/SHA256SUMS.txt
           cp android/README.md dist/README.md
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -79,7 +79,12 @@ jobs:
           arch: x86_64
           disable-animations: true
           working-directory: android
-          script: gradle --no-daemon --console=plain connectedDebugAndroidTest
+          script: |
+            test_exit=0
+            gradle --no-daemon --console=plain connectedDebugAndroidTest || test_exit=$?
+            mkdir -p app/build/reports/androidTests
+            adb logcat -d -s HUCaptionProbe:I HUCaptionExtractor:W > app/build/reports/androidTests/network-probe.txt
+            exit "$test_exit"
       - name: Emulator test reports
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

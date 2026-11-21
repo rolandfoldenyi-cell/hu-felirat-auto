@@ -13,6 +13,7 @@ export function createNativeCaptionClient(port, { timeoutMs = 90000 } = {}) {
     if (!message.ok) {
       const error = new Error(message.error || 'A telefonos feliratletöltés nem sikerült.');
       error.reason = message.reason || 'extractor_error';
+      error.diagnostic = message.diagnostic || '';
       job.finish(error);
       return;
     }
