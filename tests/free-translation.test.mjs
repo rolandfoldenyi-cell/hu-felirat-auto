@@ -152,7 +152,7 @@ test('real frontend boots against its HTML and translates without old AI keys or
   const requests=[];
   const context=vm.createContext({document,window,navigator,YT,URLSearchParams,
     AbortController,console,setTimeout,clearTimeout,setInterval,clearInterval,
-    createChromeSession,translateByPriority,parseTimedSubtitles,
+    createChromeSession,translateByPriority,parseTimedSubtitles,nativeCaptionClient:null,
     localStorage:{getItem:key=>saved.get(key)||null,setItem:(key,value)=>saved.set(key,value)},
     fetch:async(url,options)=>{
       requests.push({url,options});
@@ -207,5 +207,31 @@ test('real frontend boots against its HTML and translates without old AI keys or
     cues:[{start:0,end:1,text:'Stale server text'}]})));
   await pending;
   assert.equal(context.appUnderTest.state.cues[0].translated,'Már magyar felirat.');
+
+  // Android follows the same automatic translation/display path, without the server caption API.
+  context.fetch=previousFetch;
+  const deviceCalls=[];
+  context.nativeCaptionClient={extract:async(id,options)=>{
+    deviceCalls.push({id,options});
+    return {videoId:id,title:'Phone captions',source:'android',selectedTrack:{langCode:'en',langName:'English'},
+      tracks:[],cues:[{start:1.25,end:3.5,text:source[0]}]};
+  }};
+  const beforeDevice=requests.length;
+  await context.appUnderTest.loadVideoFromInput('dQw4w9WgXcQ');
+  assert.equal(deviceCalls.length,1);
+  assert.equal(deviceCalls[0].options.lang,'en');
+  assert.equal(requests.length,beforeDevice+1);
+  assert.equal(requests.at(-1).url.startsWith('https://translate.googleapis.com/'),true);
+  assert.equal(context.appUnderTest.state.cues[0].translated,magyar[0]);
+  assert.equal(context.appUnderTest.state.cues[0].start,1.25);
+  assert.equal(context.appUnderTest.state.cues[0].end,3.5);
+  context.nativeCaptionClient={extract:async()=>{
+    const error=new Error('A YouTube a telefonos kérést korlátozta.');error.reason='youtube_blocked';throw error;
+  }};
+  const beforeBlocked=requests.length;
+  await context.appUnderTest.loadVideoFromInput('dQw4w9WgXcQ');
+  assert.equal(requests.length,beforeBlocked,'A device block must never spend credits or silently invoke another extractor');
+  assert.match(nodes.get('statusText').textContent,/telefonos kérést/);
 });
+
 

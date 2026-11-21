@@ -1,0 +1,53 @@
+name: Android test APK
+on:
+  push:
+    branches: [codex/android-caption-pipeline]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@017a9effdb900e5b5b2fddfb590a105619dca3c3 # v4.4.2
+        with:
+          gradle-version: '8.11.1'
+          cache-disabled: true
+      - name: JavaScript pipeline checks
+        run: node --test tests/*.test.mjs
+      - name: Build and check Android
+        working-directory: android
+        run: gradle --no-daemon --console=plain testDebugUnitTest lintDebug assembleDebug
+      - name: Name APK and record checksum
+        run: |
+          mkdir -p dist
+          cp android/app/build/outputs/apk/debug/app-debug.apk dist/HU-Felirat-Auto-2.1.0-test1.apk
+          sha256sum dist/*.apk > dist/SHA256SUMS.txt
+          cp android/README.md dist/README.md
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: HU-Felirat-Auto-Android
+          path: dist/
+          retention-days: 14
+          if-no-files-found: error
+      - name: Android check reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: Android-check-reports
+          path: |
+            android/app/build/reports/
+            android/app/build/test-results/
+          if-no-files-found: ignore
+          retention-days: 14

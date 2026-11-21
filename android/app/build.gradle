@@ -1,0 +1,38 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'hu.feliratauto.android'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'hu.feliratauto.android'
+        minSdk 26
+        targetSdk 35
+        versionCode 21001
+        versionName '2.1.0-test1'
+    }
+    buildFeatures { buildConfig true }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+        coreLibraryDesugaringEnabled true
+    }
+    sourceSets { main { assets.srcDir layout.buildDirectory.dir('web-assets') } }
+    buildTypes { release { minifyEnabled false } }
+    packaging { resources.excludes += ['META-INF/DEPENDENCIES', 'META-INF/LICENSE*', 'META-INF/NOTICE*'] }
+}
+
+tasks.register('syncWebAssets', Sync) {
+    from(rootProject.file('../public'))
+    from(rootProject.file('LICENSE')) { into 'licenses'; rename { 'GPL-3.0.txt' } }
+    into(layout.buildDirectory.dir('web-assets/site'))
+    exclude 'icons/*.js', 'icons/*.html', 'icons/*.css', 'icons/manifest.json'
+}
+tasks.named('preBuild').configure { dependsOn('syncWebAssets') }
+
+dependencies {
+    implementation 'androidx.webkit:webkit:1.12.1'
+    implementation 'com.github.teamnewpipe:NewPipeExtractor:v0.27.1'
+    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs_nio:2.1.5'
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.json:json:20240303'
+}

@@ -1,5 +1,6 @@
 import { parseTimedSubtitles } from "/subtitle-files.js";
 import { createChromeSession, translateByPriority } from "/translation-priority.js";
+import { nativeCaptionClient } from "/native-captions.js";
 
 // HU Felirat Auto PWA — Automatic YouTube caption fetch + progressive Hungarian translation
 
@@ -558,9 +559,17 @@ async function loadVideoFromInput(rawInput, preferredLang = "", allowSupadata = 
   els.subOrig.hidden = true;
 
   mountOrLoadPlayer(videoId);
-  setStatus("Feliratsáv letöltése a YouTube-ról...", { loading: true });
+  setStatus(nativeCaptionClient && !allowSupadata
+    ? "Angol felirat lekérése a telefonon..."
+    : "Feliratsáv letöltése a YouTube-ról...", { loading: true });
 
   try {
+    let capData;
+    if (nativeCaptionClient && !allowSupadata) {
+      capData = await nativeCaptionClient.extract(videoId, {
+        lang: preferredLang || "en", signal: abortController.signal
+      });
+    } else {
     const capResp = await fetch("/api/captions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -573,7 +582,7 @@ async function loadVideoFromInput(rawInput, preferredLang = "", allowSupadata = 
       })
     });
 
-    const capData = await readJsonResponse(capResp);
+    capData = await readJsonResponse(capResp);
     abortController.signal.throwIfAborted();
     if (!capResp.ok) {
       if (capData.details) console.warn("[captions] részletek:", capData.details);
@@ -581,6 +590,13 @@ async function loadVideoFromInput(rawInput, preferredLang = "", allowSupadata = 
       capErr.reason = capData.reason;
       els.btnCaptionFallback.hidden = allowSupadata || !(capData.canUseFallback || state.settings.supadataKey);
       throw capErr;
+    }
+    }
+    abortController.signal.throwIfAborted();
+    if (!Array.isArray(capData.cues) || !capData.cues.length) {
+      const error = new Error("A letöltő nem adott időzített feliratot ehhez a videóhoz.");
+      error.reason = "no_captions";
+      throw error;
     }
 
     state.sourceLanguage = capData.selectedTrack?.langCode || "";
@@ -610,7 +626,8 @@ async function loadVideoFromInput(rawInput, preferredLang = "", allowSupadata = 
     try {
       await translateAllProgressive(
         abortController.signal,
-        capData.source === "supadata" ? `${sourceLabel} (Supadata)` : sourceLabel
+        capData.source === "supadata" ? `${sourceLabel} (Supadata)`
+          : capData.source === "android" ? `${sourceLabel} (telefon)` : sourceLabel
       );
     } catch (err) {
       if (err.name === "AbortError") return;
@@ -622,6 +639,16 @@ async function loadVideoFromInput(rawInput, preferredLang = "", allowSupadata = 
     }
   } catch (err) {
     if (err.name === "AbortError") return;
+    if (abortController.signal.aborted) return;
+    if (nativeCaptionClient && !allowSupadata) {
+      els.captionNotice.textContent = "A telefonos letöltés nem sikerült. Az eredeti hiba fent látható; a kézi lehetőségek tartalékként használhatók.";
+      setStatus(err.message || "A telefonos feliratletöltés nem sikerült.", { error: true });
+      els.subHu.textContent = err.reason === "no_captions" ? "Ehhez a videóhoz nincs letölthető felirat."
+        : err.reason === "youtube_blocked" ? "A YouTube a telefonos feliratkérést is korlátozta."
+          : "A felirat lekérése nem sikerült. A részletek lent láthatók.";
+      els.subHu.classList.add("placeholder");
+      return;
+    }
     els.captionNotice.textContent = "Az automatikus letöltés nem sikerült. Az alábbi két ingyenes lehetőséggel folytathatod.";
     setStatus("A felirat letöltése nem sikerült. Válassz az ingyenes lehetőségek közül.", { error: true });
     els.subHu.textContent =
@@ -861,7 +888,16 @@ document.addEventListener("fullscreenchange", () => {
 // ---------------- PWA Install & Share Target ----------------
 
 function setupPwa() {
-  if ("serviceWorker" in navigator) {
+  if (nativeCaptionClient) {
+    els.badgeInstalled.hidden = false;
+    els.badgeInstalled.textContent = "Android · 2.1.0-test1";
+    els.btnInstall.hidden = true;
+    const runtimeLabel = document.getElementById("runtimeLabel");
+    if (runtimeLabel) runtimeLabel.textContent = "ANDROID · 2.1.0-test1";
+    const notices = document.getElementById("androidNotices");
+    if (notices) notices.hidden = false;
+  }
+  if (!nativeCaptionClient && "serviceWorker" in navigator) {
     navigator.serviceWorker.register("/sw.js").catch(() => {});
   }
 
@@ -1071,5 +1107,6 @@ applySubtitleStyle();
 renderHistory();
 bindEvents();
 setupPwa();
+
 
 
