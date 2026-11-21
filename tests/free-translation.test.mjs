@@ -136,6 +136,7 @@ test('real frontend boots against its HTML and translates without old AI keys or
     set innerHTML(value){this._html=value;if(!value)this.children=[];},get innerHTML(){return this._html||'';}
   });
   const document={
+    body:element(),
     getElementById(id){assert.ok(ids.has(id),'Missing HTML element '+id);
       if(!nodes.has(id))nodes.set(id,element());return nodes.get(id);},
     createElement(){return element();},createDocumentFragment(){return element(true);},
@@ -149,10 +150,11 @@ test('real frontend boots against its HTML and translates without old AI keys or
   const YT={Player:function(id,options){playerConfigurations.push(options.playerVars);
     return{loadVideoById(){},destroy(){}};}};
   const window={YT,navigator,location:{search:''},history:{replaceState(){}},
-    matchMedia:()=>({matches:false}),addEventListener(){}};
+    matchMedia:()=>({matches:false,addEventListener(){}}),addEventListener(){}};
   const requests=[];
   const context=vm.createContext({document,window,navigator,YT,URLSearchParams,
     AbortController,console,setTimeout,clearTimeout,setInterval,clearInterval,
+    MutationObserver:class { observe(){} },
     createChromeSession,translateByPriority,parseTimedSubtitles,createTranslationCache,translateTimedCues,nativeCaptionClient:null,
     localStorage:{getItem:key=>saved.get(key)||null,setItem:(key,value)=>saved.set(key,value)},
     fetch:async(url,options)=>{
@@ -166,6 +168,7 @@ test('real frontend boots against its HTML and translates without old AI keys or
   });
   const app=fs.readFileSync(new URL('../public/app.js',import.meta.url),'utf8')
     .replace(/^import[^\n]+\n/gm,'');
+  new vm.Script(fs.readFileSync(new URL('../public/player-layout.js',import.meta.url),'utf8').replace(/^export /gm,'')).runInContext(context);
   new vm.Script(app+'\nglobalThis.appUnderTest={state,loadVideoFromInput,importSubtitleText,useNativeCaptions,restartTranslation,updateActiveSubtitle};').runInContext(context);
   assert.equal(context.appUnderTest.state.ytApiReady,true,'Already loaded YouTube API must be detected');
   await context.appUnderTest.loadVideoFromInput('dQw4w9WgXcQ');
@@ -190,6 +193,7 @@ test('real frontend boots against its HTML and translates without old AI keys or
   assert.equal(nodes.get('subtitleStage').hidden,true);
   assert.equal(playerConfigurations.at(-1).cc_load_policy,1);
   assert.equal(playerConfigurations.at(-1).cc_lang_pref,'hu');
+  assert.equal(playerConfigurations.at(-1).fs,0,'Fullscreen must include the app caption row');
   await context.appUnderTest.importSubtitleText(hungarian,'hu');
   assert.equal(nodes.get('subtitleStage').hidden,false);
   assert.equal(playerConfigurations.at(-1).cc_load_policy,0);

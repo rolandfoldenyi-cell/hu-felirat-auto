@@ -1,4 +1,4 @@
-const CACHE_NAME = "hu-felirat-auto-v6-codex";
+const CACHE_NAME = "hu-felirat-auto-v7-codex";
 const APP_SHELL = [
   "/",
   "/index.html",
@@ -8,6 +8,7 @@ const APP_SHELL = [
   "/subtitle-files.js",
   "/native-captions.js",
   "/timed-translation.js",
+  "/player-layout.js",
   "/manifest.json",
   "/icons/icon-192.png",
   "/icons/icon-512.png"

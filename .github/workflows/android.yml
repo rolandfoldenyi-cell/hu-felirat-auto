@@ -49,7 +49,7 @@ jobs:
       - name: Name APK and record checksum
         run: |
           mkdir -p dist
-          cp android/app/build/outputs/apk/debug/app-debug.apk dist/HU-Felirat-Codex-2.2.0-test1.apk
+          cp android/app/build/outputs/apk/debug/app-debug.apk dist/HU-Felirat-Codex-2.2.0-test2.apk
           sha256sum dist/*.apk > dist/SHA256SUMS.txt
           cp android/README.md dist/README.md
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -102,7 +102,7 @@ jobs:
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
-      - name: Launch app and verify the native message boundary
+      - name: Verify rotation, caption visibility and native pipeline
         uses: ReactiveCircus/android-emulator-runner@1dcd0090116d15e7c562f8db72807de5e036a4ed # v2.34.0
         with:
           api-level: 35
@@ -138,13 +138,14 @@ jobs:
           CODEX_SHA: ${{ github.sha }}
         run: |
           sha256sum -c dist/SHA256SUMS.txt
-          tag="codex-android-speech-test1-r${{ github.run_number }}-a${{ github.run_attempt }}"
+          tag="codex-android-layout-test2-r${{ github.run_number }}-a${{ github.run_attempt }}"
           cat > release-notes.md <<'NOTES'
-          # HU Felirat – Codex 2, 2.2.0-test1
+          # HU Felirat – Codex 2, 2.2.0-test2
           Önálló Android-tesztváltozat: YouTube-link → időzített angol felirat → ingyenes magyar fordítás → szinkron megjelenítés. A Betöltés gomb után minden feldolgozási lépés automatikus.
           Az APK-t közvetlenül töltsd le és telepítsd a telefonra. Az alkalmazás neve HU Felirat – Codex 2; a már telepített PWA és más változatok mellett is használható. API-kulcs az alapfolyamathoz nem kell.
+          Javítás: fekvő és teljes képernyős nézetben a videó alatti külön sávban látható marad a magyar felirat; a forgatás nem tölti újra a videót. Az emulátoros próba ellenőrzi a felirat képernyőn belüli helyét, a kétnyelvű nézetet és a Vissza gombot.
           Ez tesztkiadás. A GitHubon futó Android-próbák hálózata eltér a saját telefonétól. Az esetleges kihagyott hálózati próba nem bizonyít sikeres YouTube-letöltést; az Actions jelentés rögzíti az eredményt. A saját telefonos elfogadási próba szükséges.
           Az app elsőként a YouTube-feliratot kéri le. Ha nincs felirat, megpróbálja letölteni a hangsávot, és a telefonon angol beszédfelismerést futtat. A modell az APK része; nem kell hozzá API-kulcs. A BABEL hangsávjának szerverpróbáját YouTube-botellenőrzés blokkolta, ezért ezzel a konkrét videóval a telefonos próba még szükséges. A képre írt szöveget nem olvassa le. A hangfeldolgozás ebben a tesztverzióban legfeljebb 60 perces videót támogat.
           A teszt-APK debug aláírású. A forráskód és a buildleírás a kiadási taghez tartozó android/ mappában található. Az Android-modul és a NewPipeExtractor GPL-3.0-or-later licencű.
           NOTES
-          gh release create "$tag" dist/HU-Felirat-Codex-2.2.0-test1.apk dist/SHA256SUMS.txt dist/README.md --target "$CODEX_SHA" --title "HU Felirat – Codex 2, 2.2.0-test1" --notes-file release-notes.md --prerelease
+          gh release create "$tag" dist/HU-Felirat-Codex-2.2.0-test2.apk dist/SHA256SUMS.txt dist/README.md --target "$CODEX_SHA" --title "HU Felirat – Codex 2, 2.2.0-test2" --notes-file release-notes.md --prerelease

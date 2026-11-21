@@ -4,6 +4,7 @@ package hu.feliratauto.android;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
+import android.content.pm.ActivityInfo;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Bundle;
@@ -36,7 +37,7 @@ public final class MainActivity extends Activity {
     private static final String HOST = "hu-felirat-auto-seven.vercel.app";
     private static final String ORIGIN = "https://" + HOST;
     private static final Set<String> ASSETS = Set.of("index.html", "app.js", "styles.css", "manifest.json",
-        "subtitle-files.js", "translation-priority.js", "native-captions.js", "timed-translation.js", "android-notices.html",
+        "subtitle-files.js", "translation-priority.js", "native-captions.js", "timed-translation.js", "player-layout.js", "android-notices.html",
         "icons/icon-192.png", "icons/icon-512.png", "icons/icon-maskable-512.png", "licenses/GPL-3.0.txt", "licenses/whisper-MIT.txt", "licenses/Whisper-models-MIT.txt", "licenses/Silero-VAD-MIT.txt");
     private final ThreadPoolExecutor executor = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.SECONDS, new ArrayBlockingQueue<>(1));
     private CaptionExtractor extractor;
@@ -45,8 +46,8 @@ public final class MainActivity extends Activity {
     private int pageEpoch;
     private WebView webView;
     private FrameLayout root;
-    private View fullScreen;
-    private WebChromeClient.CustomViewCallback fullScreenCallback;
+    private boolean playerExpanded;
+    private boolean playerOrientationLocked;
     private ValueCallback<Uri[]> fileCallback;
 
     @Override public void onCreate(Bundle saved) {
@@ -54,8 +55,14 @@ public final class MainActivity extends Activity {
         root = new FrameLayout(this);
         root.setBackgroundColor(Color.rgb(10, 18, 24));
         root.setOnApplyWindowInsetsListener((view, insets) -> {
-            view.setPadding(insets.getSystemWindowInsetLeft(), insets.getSystemWindowInsetTop(),
-                insets.getSystemWindowInsetRight(), insets.getSystemWindowInsetBottom());
+            int left = insets.getSystemWindowInsetLeft(), top = insets.getSystemWindowInsetTop();
+            int right = insets.getSystemWindowInsetRight(), bottom = insets.getSystemWindowInsetBottom();
+            if (android.os.Build.VERSION.SDK_INT >= 28 && insets.getDisplayCutout() != null) {
+                var cutout = insets.getDisplayCutout();
+                left = Math.max(left, cutout.getSafeInsetLeft()); top = Math.max(top, cutout.getSafeInsetTop());
+                right = Math.max(right, cutout.getSafeInsetRight()); bottom = Math.max(bottom, cutout.getSafeInsetBottom());
+            }
+            view.setPadding(left, top, right, bottom);
             return insets;
         });
         setContentView(root);
@@ -97,6 +104,7 @@ public final class MainActivity extends Activity {
             @Override public void onPageStarted(WebView view, String url, android.graphics.Bitmap icon) {
                 pageEpoch++;
                 cancelExtraction();
+                setPlayerLayout(false, false);
             }
             @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 if (!request.isForMainFrame()) return false;
@@ -110,13 +118,12 @@ public final class MainActivity extends Activity {
         });
         webView.setWebChromeClient(new WebChromeClient() {
             @Override public void onShowCustomView(View view, CustomViewCallback callback) {
-                if (fullScreen != null) { callback.onCustomViewHidden(); return; }
-                fullScreen = view; fullScreenCallback = callback;
-                root.addView(view, new FrameLayout.LayoutParams(-1, -1));
-                webView.setVisibility(View.GONE);
-                getWindow().addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+                // A video-only custom view drops the app's Hungarian caption row.
+                // Keep the original WebView and expand the complete player instead.
+                callback.onCustomViewHidden();
+                webView.post(() -> webView.evaluateJavascript("window.dispatchEvent(new Event('hu-enter-player'))", null));
             }
-            @Override public void onHideCustomView() { hideFullscreen(); }
+            @Override public void onHideCustomView() { /* The app owns the complete player layout. */ }
             @Override public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback, FileChooserParams params) {
                 if (fileCallback != null) fileCallback.onReceiveValue(null);
                 fileCallback = callback;
@@ -130,6 +137,12 @@ public final class MainActivity extends Activity {
             if (!isMainFrame || !ORIGIN.equals(sourceOrigin.toString())) return;
             try {
                 JSONObject input = new JSONObject(message.getData());
+                if (input.optString("type").equals("playerLayout")) {
+                    if (input.opt("expanded") instanceof Boolean && input.opt("lockLandscape") instanceof Boolean) {
+                        setPlayerLayout(input.getBoolean("expanded"), input.getBoolean("lockLandscape"));
+                    }
+                    return;
+                }
                 String id = input.optString("id");
                 if (!id.matches("[0-9]{1,12}")) return;
                 if (input.optString("type").equals("cancel")) {
@@ -213,16 +226,28 @@ public final class MainActivity extends Activity {
             fileCallback.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(result, data)); fileCallback = null;
         }
     }
-    private void hideFullscreen() {
-        if (fullScreen == null) return;
-        root.removeView(fullScreen); fullScreen = null;
-        webView.setVisibility(View.VISIBLE);
-        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
-        if (fullScreenCallback != null) fullScreenCallback.onCustomViewHidden();
-        fullScreenCallback = null;
+    private void setPlayerLayout(boolean expanded, boolean lockLandscape) {
+        if (playerExpanded != expanded) {
+            playerExpanded = expanded;
+            if (expanded) {
+                getWindow().addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+                getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                    | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                    | View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
+            } else {
+                getWindow().clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+                getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
+            }
+            root.requestApplyInsets();
+        }
+        boolean lock = expanded && lockLandscape;
+        if (playerOrientationLocked != lock) {
+            playerOrientationLocked = lock;
+            setRequestedOrientation(lock ? ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE : ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+        }
     }
     @Override public void onBackPressed() {
-        if (fullScreen != null) hideFullscreen();
+        if (playerExpanded) webView.evaluateJavascript("window.dispatchEvent(new Event('hu-exit-player'))", null);
         else if (webView != null && webView.canGoBack()) webView.goBack();
         else super.onBackPressed();
     }

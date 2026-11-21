@@ -2,6 +2,7 @@ import { parseTimedSubtitles } from "/subtitle-files.js";
 import { createChromeSession, translateByPriority } from "/translation-priority.js";
 import { nativeCaptionClient } from "/native-captions.js";
 import { createTranslationCache, translateTimedCues } from "/timed-translation.js";
+import { createPlayerLayout } from "/player-layout.js";
 
 // HU Felirat Auto PWA — Automatic YouTube caption fetch + progressive Hungarian translation
 
@@ -89,6 +90,8 @@ const els = {
   subtitleStage: document.getElementById("subtitleStage"),
   ytPlayerHost: document.getElementById("ytPlayerHost")
 };
+const playerLayout = createPlayerLayout({ stage: els.playerStage, card: els.playerCard,
+  exitButton: els.btnExitFs, nativePort: nativeCaptionClient ? window.HUCaptionNative : null });
 
 // ---------------- Settings & History ----------------
 
@@ -435,6 +438,7 @@ function mountOrLoadPlayer(videoId, { nativeCaptions = false, startSeconds = 0 }
     playerVars: {
       autoplay: 1,
       playsinline: 1,
+      fs: 0, // The app's fullscreen button keeps its Hungarian captions visible.
       cc_load_policy: nativeCaptions ? 1 : 0,
       cc_lang_pref: "hu",
       start: Math.max(0, Math.floor(startSeconds)),
@@ -855,44 +859,22 @@ async function translateAllProgressive(signal, sourceLangName, { ignoreCache = f
 // ---------------- Fullscreen ----------------
 
 async function enterFullscreen() {
-  try {
-    if (els.playerStage.requestFullscreen) {
-      await els.playerStage.requestFullscreen();
-    } else if (els.playerStage.webkitRequestFullscreen) {
-      els.playerStage.webkitRequestFullscreen();
-    }
-    if (screen.orientation && screen.orientation.lock) {
-      screen.orientation.lock("landscape").catch(() => {});
-    }
-  } catch {
-    // Some browsers disallow orientation lock without fullscreen
-  }
+  await playerLayout.enter();
 }
 
 async function exitFullscreen() {
-  try {
-    if (document.fullscreenElement) {
-      await document.exitFullscreen();
-    } else if (document.webkitFullscreenElement && document.webkitExitFullscreen) {
-      document.webkitExitFullscreen();
-    }
-  } catch {}
+  await playerLayout.exit();
 }
-
-document.addEventListener("fullscreenchange", () => {
-  const isFs = Boolean(document.fullscreenElement);
-  els.btnExitFs.hidden = !isFs;
-});
 
 // ---------------- PWA Install & Share Target ----------------
 
 function setupPwa() {
   if (nativeCaptionClient) {
     els.badgeInstalled.hidden = false;
-    els.badgeInstalled.textContent = "Codex · 2.2.0-test1";
+    els.badgeInstalled.textContent = "Codex · 2.2.0-test2";
     els.btnInstall.hidden = true;
     const runtimeLabel = document.getElementById("runtimeLabel");
-    if (runtimeLabel) runtimeLabel.textContent = "ANDROID · CODEX · 2.2.0-test1";
+    if (runtimeLabel) runtimeLabel.textContent = "ANDROID · CODEX · 2.2.0-test2";
     const notices = document.getElementById("androidNotices");
     if (notices) notices.hidden = false;
   }
