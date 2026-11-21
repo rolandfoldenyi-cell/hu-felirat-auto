@@ -21,9 +21,12 @@ async function mapLimit(items, limit, fn) {
 }
 
 // One Google request; retries once on rate limiting or a server error.
-async function googleFreeRaw(text) {
+async function googleFreeRaw(text, sourceLanguage) {
+  const url = new URL(GT_URL);
+  url.searchParams.set("sl", sourceLanguage || "auto");
+  url.searchParams.set("q", text);
   for (let attempt = 0; attempt < 2; attempt++) {
-    const resp = await fetch(GT_URL + encodeURIComponent(text), {
+    const resp = await fetch(url.toString(), {
       headers: { "User-Agent": "Mozilla/5.0" },
       signal: AbortSignal.timeout(10000)
     });
@@ -47,19 +50,19 @@ const untranslatedIdx = (lines, out) =>
 
 // Lines are joined with plain line breaks: Google keeps one output line per input line.
 // (The former "###SEP###" marker was translated to "###SZEPT###", which broke every batch.)
-async function googleBatch(lines) {
-  const parts = (await googleFreeRaw(lines.join("\n"))).split("\n");
+async function googleBatch(lines, sourceLanguage) {
+  const parts = (await googleFreeRaw(lines.join("\n"), sourceLanguage)).split("\n");
   return parts.length === lines.length ? parts.map((p, i) => p.trim() || lines[i]) : null;
 }
 
 // Google sometimes answers HTTP 200 with the source text echoed back, and from Vercel's
 // shared IP it does so for most lines. Unchanged lines get one more try as a single
 // request; if no line gets translated at all, the call fails fast instead of looping.
-async function translateWithGoogleFree(lines) {
-  let result = await googleBatch(lines).catch(() => null);
+async function translateWithGoogleFree(lines, sourceLanguage) {
+  let result = await googleBatch(lines, sourceLanguage).catch(() => null);
   if (!result) {
     result = await mapLimit(lines, 4, (line) =>
-      googleFreeRaw(line)
+      googleFreeRaw(line, sourceLanguage)
         .then((t) => t.trim() || line)
         .catch(() => line)
     );
@@ -67,7 +70,7 @@ async function translateWithGoogleFree(lines) {
   const retryIdx = untranslatedIdx(lines, result);
   if (retryIdx.length) {
     await sleep(400);
-    const again = await googleBatch(retryIdx.map((i) => lines[i])).catch(() => null);
+    const again = await googleBatch(retryIdx.map((i) => lines[i]), sourceLanguage).catch(() => null);
     if (again) {
       retryIdx.forEach((lineIdx, k) => {
         result[lineIdx] = again[k];
@@ -82,14 +85,14 @@ async function translateWithGoogleFree(lines) {
   return { translations: result, failed };
 }
 
-async function translateWithDeepL(lines, key, plan) {
+async function translateWithDeepL(lines, key, plan, sourceLanguage) {
   if (typeof key !== "string" || !key.trim()) throw new Error("Hiányzik a DeepL API-kulcs.");
   if (!["developer", "legacy_free"].includes(plan)) throw new Error("Válassz ingyenes DeepL API-csomagot.");
   const host = plan === "legacy_free" ? "https://api-free.deepl.com" : "https://api.deepl.com";
   const resp = await fetch(host + "/v2/translate", {
     method: "POST",
     headers: { "Content-Type": "application/json", "Authorization": "DeepL-Auth-Key " + key.trim() },
-    body: JSON.stringify({ text: lines, target_lang: "HU" }),
+    body: JSON.stringify({ text: lines, target_lang: "HU", ...(sourceLanguage && sourceLanguage !== "auto" ? { source_lang: sourceLanguage.toUpperCase() } : {}) }),
     signal: AbortSignal.timeout(15000)
   });
   if (!resp.ok) {
@@ -113,21 +116,25 @@ export default async function handler(req, res) {
   res.setHeader("Cache-Control", "no-store");
   if (req.method === "OPTIONS") return res.status(204).end();
   if (req.method !== "POST") return res.status(405).json({ error: "Csak POST kérés engedélyezett." });
-  const { texts, engine = "google_free", deeplKey = "", deeplPlan = "developer" } = req.body || {};
+  const { texts, engine = "google_free", deeplKey = "", deeplPlan = "developer", sourceLanguage = "" } = req.body || {};
   if (!Array.isArray(texts) || !texts.length || texts.length > 40 ||
       texts.some((text) => typeof text !== "string") || texts.join("").length > 20000) {
     return res.status(400).json({ error: "Adj meg 1–40 feliratsort, összesen legfeljebb 20 ezer karakterrel." });
   }
+  if (typeof sourceLanguage !== "string" || !/^(?:auto|[a-z]{2,3}(?:-[a-z0-9]{2,8})?)?$/i.test(sourceLanguage)) {
+    return res.status(400).json({ error: "Érvénytelen forrásnyelv." });
+  }
+  const language = sourceLanguage.toLowerCase().split("-")[0];
   // Old Gemini/OpenAI settings can never trigger billable model calls.
   if (!["google_free", "deepl"].includes(engine)) {
     return res.status(400).json({ error: "Csak az ingyenes Google és az opcionális DeepL használható." });
   }
   try {
     if (engine === "deepl") {
-      const translations = await translateWithDeepL(texts, deeplKey, deeplPlan);
+      const translations = await translateWithDeepL(texts, deeplKey, deeplPlan, language);
       return res.status(200).json({ engine: "deepl", translations, failed: 0 });
     }
-    return res.status(200).json({ engine: "google_free", ...await translateWithGoogleFree(texts) });
+    return res.status(200).json({ engine: "google_free", ...await translateWithGoogleFree(texts, language) });
   } catch (error) {
     return res.status(502).json({ error: error.message || "A fordítás nem sikerült." });
   }

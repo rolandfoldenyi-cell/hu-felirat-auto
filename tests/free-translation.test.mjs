@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createChromeSession, translateByPriority } from '../public/translation-priority.js';
 import { parseTimedSubtitles } from '../public/subtitle-files.js';
 import { createTranslationCache, translateTimedCues } from '../public/timed-translation.js';
+import { prepareSentenceCues } from '../public/sentence-cues.js';
 import translateHandler from '../api/translate.js';
 import captionsHandler from '../api/captions.js';
 import fs from 'node:fs';
@@ -152,10 +153,10 @@ test('real frontend boots against its HTML and translates without old AI keys or
   const window={YT,navigator,location:{search:''},history:{replaceState(){}},
     matchMedia:()=>({matches:false,addEventListener(){}}),addEventListener(){}};
   const requests=[];
-  const context=vm.createContext({document,window,navigator,YT,URLSearchParams,
+  const context=vm.createContext({document,window,navigator,YT,URL,URLSearchParams,
     AbortController,console,setTimeout,clearTimeout,setInterval,clearInterval,
     MutationObserver:class { observe(){} },
-    createChromeSession,translateByPriority,parseTimedSubtitles,createTranslationCache,translateTimedCues,nativeCaptionClient:null,
+    createChromeSession,translateByPriority,parseTimedSubtitles,createTranslationCache,translateTimedCues,prepareSentenceCues,nativeCaptionClient:null,
     localStorage:{getItem:key=>saved.get(key)||null,setItem:(key,value)=>saved.set(key,value)},
     fetch:async(url,options)=>{
       requests.push({url,options});
@@ -163,6 +164,7 @@ test('real frontend boots against its HTML and translates without old AI keys or
         selectedTrack:{langCode:'en',langName:'English'},tracks:[],
         cues:[{start:0,end:2,text:source[0]}]}));
       assert.ok(String(url).startsWith('https://translate.googleapis.com/'));
+      assert.equal(new URL(url).searchParams.get('sl'),'en');
       return new Response(JSON.stringify([[[magyar[0],source[0]]]]));
     }
   });
@@ -264,6 +266,15 @@ test('real frontend boots against its HTML and translates without old AI keys or
   await context.appUnderTest.loadVideoFromInput('dQw4w9WgXcQ');
   assert.equal(requests.length,beforeBlocked,'A device block must never spend credits or silently invoke another extractor');
   assert.match(nodes.get('statusText').textContent,/telefonos kérést/);
+});
+
+test('the fallback receives the explicit source language instead of guessing short English text',async t=>{
+  let address;
+  t.mock.method(globalThis,'fetch',async url=>{address=String(url);return new Response(JSON.stringify([[[magyar[0],source[0]]]]));});
+  const out=res();await translateHandler({method:'POST',body:{texts:[source[0]],sourceLanguage:'en-GB'}},out);
+  assert.equal(out.code,200);assert.equal(new URL(address).searchParams.get('sl'),'en');
+  const bad=res();await translateHandler({method:'POST',body:{texts:[source[0]],sourceLanguage:'en&tl=de'}},bad);
+  assert.equal(bad.code,400);assert.equal(globalThis.fetch.mock.callCount(),1);
 });
 
 

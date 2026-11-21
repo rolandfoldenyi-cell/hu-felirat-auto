@@ -1,6 +1,6 @@
 // Caption acquisition is owned by the platform adapter. This module only translates
 // an existing timed cue list, preserving every index, identifier and timestamp.
-const CACHE_KEY = 'hufelirat_translation_cache_v1';
+const CACHE_KEY = 'hufelirat_translation_cache_v2_sentences';
 const MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
 export function createTranslationCache({ storage, maxEntries = 1500, maxChars = 500000, now = Date.now } = {}) {
@@ -19,7 +19,7 @@ export function createTranslationCache({ storage, maxEntries = 1500, maxChars = 
     const raw = backend?.getItem(CACHE_KEY);
     if (raw && raw.length <= maxChars * 3) {
       const data = JSON.parse(raw);
-      if (data.version === 1 && Array.isArray(data.entries)) for (const [key, entry] of data.entries) {
+      if (data.version === 2 && Array.isArray(data.entries)) for (const [key, entry] of data.entries) {
         if (typeof key !== 'string' || !entry || typeof entry.text !== 'string' || !entry.text.trim() ||
             !Number.isFinite(entry.at) || entry.at > now() || now() - entry.at > MAX_AGE_MS) continue;
         remove(key); entries.set(key, entry); size += key.length + entry.text.length;
@@ -46,7 +46,7 @@ export function createTranslationCache({ storage, maxEntries = 1500, maxChars = 
     },
     flush() {
       if (!dirty || !backend) return;
-      try { backend.setItem(CACHE_KEY, JSON.stringify({ version: 1, entries: [...entries] })); dirty = false; }
+      try { backend.setItem(CACHE_KEY, JSON.stringify({ version: 2, entries: [...entries] })); dirty = false; }
       catch { /* Memory caching still works when browser storage is full or unavailable. */ }
     }
   };

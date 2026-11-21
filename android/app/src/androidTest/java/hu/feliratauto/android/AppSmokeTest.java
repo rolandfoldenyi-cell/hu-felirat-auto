@@ -41,7 +41,7 @@ public final class AppSmokeTest {
         try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
             awaitTrue(scenario, "Boolean(document.querySelector('#urlInput') && document.querySelector('#runtimeLabel')?.textContent.includes('ANDROID'))");
             assertEquals("true", evaluate(scenario, "typeof HUCaptionNative.postMessage === 'function'"));
-            assertEquals("true", evaluate(scenario, "document.querySelector('#badgeInstalled').textContent.includes('2.2.0-test3')"));
+            assertEquals("true", evaluate(scenario, "document.querySelector('#badgeInstalled').textContent.includes('2.3.0-test1')"));
             evaluate(scenario, """
                 (() => {
                   const previous = HUCaptionNative.onmessage;
@@ -116,6 +116,50 @@ public final class AppSmokeTest {
                 Thread.sleep(500);
             }
             fail("The real caption/translation probe did not finish within its time limit");
+        }
+    }
+
+    private String awaitQualityTranslation(ActivityScenario<MainActivity> scenario, int expectedCues) throws Exception {
+        long end = System.currentTimeMillis() + 60000;
+        while (System.currentTimeMillis() < end) {
+            String raw = evaluate(scenario, """
+                JSON.stringify({text:document.querySelector('#statusText').textContent,
+                  error:document.querySelector('#statusText').classList.contains('error'),
+                  original:[...document.querySelectorAll('.cue-orig')].map(n=>n.textContent),
+                  hu:[...document.querySelectorAll('.cue-hu')].map(n=>n.textContent)})
+                """);
+            JSONObject result = new JSONObject((String) new JSONTokener(raw).nextValue());
+            if (result.getBoolean("error")) {
+                if (!result.getString("text").matches("(?is).*(Google|korlátoz|hálózat|network|fetch|HTTP (429|5[0-9]{2})).*")) {
+                    fail("The sentence translation pipeline failed: " + result.getString("text"));
+                }
+                Log.i("HUCaptionProbe", "QUALITY_SENTENCE=network-unverified; " + result.getString("text"));
+                throw new AssumptionViolatedException("The external free translator could not complete the comparison: " + result.getString("text"));
+            }
+            if (result.getString("text").startsWith("Kész") && result.getJSONArray("hu").length() == expectedCues) return result.toString();
+            Thread.sleep(300);
+        }
+        fail("The live sentence translation comparison timed out"); return "";
+    }
+
+    @Test(timeout = 180000) public void wholeSentenceResolvesRiverBankAndCanRestoreOriginalRows() throws Exception {
+        try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
+            awaitTrue(scenario, "Boolean(document.querySelector('#runtimeLabel')?.textContent.includes('ANDROID'))");
+            evaluate(scenario, "document.querySelector('#btnSettings').click(); document.querySelector('#inputSentenceMode').checked=false; document.querySelector('#btnSaveSettings').click(); true");
+            evaluate(scenario, """
+                document.querySelector('#urlInput').value='https://youtu.be/dQw4w9WgXcQ';
+                document.querySelector('#importLanguage').value='en';
+                document.querySelector('#subtitleText').value='1\\n00:00:01,125 --> 00:00:03,250\\nHe sat on the bank\\n\\n2\\n00:00:03,300 --> 00:00:05,875\\nof the river to rest.';
+                document.querySelector('#btnImportText').click(); true
+                """);
+            JSONObject before = new JSONObject(awaitQualityTranslation(scenario, 2));
+            evaluate(scenario, "document.querySelector('#btnSettings').click(); document.querySelector('#inputSentenceMode').checked=true; document.querySelector('#btnSaveSettings').click(); true");
+            JSONObject after = new JSONObject(awaitQualityTranslation(scenario, 1));
+            assertEquals("He sat on the bank of the river to rest.", after.getJSONArray("original").getString(0));
+            String text = after.getJSONArray("hu").getString(0).toLowerCase(java.util.Locale.ROOT);
+            assertTrue("The complete sentence must refer to a river bank, not a financial bank: " + text,
+                text.contains("folyó") && (text.contains("part") || text.contains("szél")) && !text.contains("bank"));
+            Log.i("HUCaptionProbe", "QUALITY_SENTENCE=success; old=" + before.getJSONArray("hu") + "; new=" + after.getJSONArray("hu"));
         }
     }
 }

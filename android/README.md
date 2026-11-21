@@ -1,8 +1,14 @@
-# HU Felirat – Codex 2 (2.2.0-test3)
+# HU Felirat – Codex 2 (2.3.0-test1)
 
 Önálló, teljesen automatikus Android-tesztváltozat. A YouTube-link betöltése után az app először a meglévő angol feliratot kéri le. Ha a videóhoz nincs feliratsáv, automatikusan megpróbálja letölteni a hangsávot, és a telefonon futó Whisperrel időzített angol szöveget készít. Ezt a meglévő ingyenes fordítási lánc magyarra fordítja, majd a lejátszó az időzítések alapján jeleníti meg.
 
 A feldolgozás az appon belül marad; nem kell kézzel másolni vagy feliratfájlt kezelni. A modell az APK része, az alapfolyamathoz nincs szükség fiókra, mikrofonengedélyre vagy API-kulcsra. A hangot nem küldjük felhős beszédfelismerőnek. A felismert szöveg fordítása a támogatott Chrome-fordítóval, illetve az ingyenes Google-lánccal történik; a korábban külön megadott DeepL-kulcs opcionális.
+
+## Fordítás mondatokban
+
+A Természetesebb fordítás alapból be van kapcsolva. A megszakítás nélkül folytatódó rövid sorokat mondattá fűzi, és együtt adja a fordítónak. Új beszélőjelölésnél, zenei megjegyzésnél, mondatvégnél és nagyobb szünetnél új egységet kezd. Egy összevont egység legfeljebb 160 forráskarakter, 8 másodperc és 6 sor; az eredetileg hosszabb sort nem csonkítja. A teljes magyar mondat az első forrássor kezdetétől az utolsó végéig látszik. A forrássorokat megőrzi, így a beállítás kikapcsolásakor az eredeti sorbeosztásra vált. Ez a feliratsorok számát és megjelenési hosszát módosíthatja, de nem találgat szó szerinti magyar-angol időbeli megfeleltetést.
+
+A kiválasztott forrásnyelvet átadja a Google-nak; a rövid angol szavak nyelvét így nem kell újra kitalálnia. A régi töredékfordítások gyorsítótárát nem használja az új kiadásban. A gépi fordítás továbbra is hibázhat, különösen szlengnél, szakkifejezésnél vagy hibás angol átiratnál. Az ingyenes Google-végpont nem garantált szolgáltatás; a szerveres összehasonlítást jelenleg HTTP 429 korlátozta, ezért ebből nem állítunk mért minőségjavulást.
 
 ## Fekvő és teljes képernyős nézet
 

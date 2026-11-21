@@ -42,7 +42,7 @@ public final class MainActivity extends Activity {
     private static final String HOST = "hu-felirat-auto-seven.vercel.app";
     private static final String ORIGIN = "https://" + HOST;
     private static final Set<String> ASSETS = Set.of("index.html", "app.js", "styles.css", "manifest.json",
-        "subtitle-files.js", "translation-priority.js", "native-captions.js", "timed-translation.js", "player-layout.js", "android-notices.html",
+        "subtitle-files.js", "translation-priority.js", "native-captions.js", "timed-translation.js", "player-layout.js", "sentence-cues.js", "android-notices.html",
         "icons/icon-192.png", "icons/icon-512.png", "icons/icon-maskable-512.png", "licenses/GPL-3.0.txt", "licenses/whisper-MIT.txt", "licenses/Whisper-models-MIT.txt", "licenses/Silero-VAD-MIT.txt");
     private final ThreadPoolExecutor executor = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.SECONDS, new ArrayBlockingQueue<>(1));
     private CaptionExtractor extractor;
