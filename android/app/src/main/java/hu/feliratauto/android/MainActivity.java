@@ -200,6 +200,10 @@ public final class MainActivity extends Activity {
             for (Throwable cause = error; cause != null; cause = cause.getCause()) {
                 String type = cause.getClass().getSimpleName();
                 String message = String.valueOf(cause.getMessage()).toLowerCase(java.util.Locale.ROOT);
+                if (isUnexpectedUpstreamHtml(type, message)) {
+                    reason = "upstream_invalid_response";
+                    text = "A YouTube feliratadatok helyett weboldalt adott vissza. A letöltő ezt nem tudja feldolgozni; próbáld újra később."; break;
+                }
                 if (type.contains("ReCaptcha") || message.contains("not a bot") || message.contains("sign in to confirm")) {
                     reason = "youtube_blocked"; text = "A YouTube a telefonról érkező kéréshez is ellenőrzést kér. A feliratot ezért nem lehetett letölteni."; break;
                 }
@@ -218,6 +222,11 @@ public final class MainActivity extends Activity {
             .put("extractorVersion", "0.27.1").put("nativeVersion", BuildConfig.VERSION_NAME); }
         catch (Exception ignored) {}
         return result;
+    }
+
+    static boolean isUnexpectedUpstreamHtml(String type, String message) {
+        String normalized = message.toLowerCase(java.util.Locale.ROOT);
+        return type.contains("Parsing") && normalized.contains("got html document") && normalized.contains("expected json response");
     }
 
     private void cancelExtraction() {

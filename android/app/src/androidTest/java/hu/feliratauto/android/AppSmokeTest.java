@@ -99,7 +99,7 @@ public final class AppSmokeTest {
                 if (status.getBoolean("error")) {
                     String reason = status.optString("reason");
                     Log.i("HUCaptionProbe", "OUTCOME=" + reason + "; videoId=dQw4w9WgXcQ; network=GitHub-emulator");
-                    if (reason.equals("youtube_blocked") || reason.equals("network_error") || reason.equals("timeout") || reason.equals("unavailable")) {
+                    if (reason.equals("youtube_blocked") || reason.equals("network_error") || reason.equals("timeout") || reason.equals("unavailable") || reason.equals("upstream_invalid_response")) {
                         throw new AssumptionViolatedException("External network probe could not complete: " + reason + ". Phone-network validation still required.");
                     }
                     fail("Real pipeline failed: " + status.getString("text"));
@@ -160,6 +160,11 @@ public final class AppSmokeTest {
             assertTrue("The complete sentence must refer to a river bank, not a financial bank: " + text,
                 text.contains("folyó") && (text.contains("part") || text.contains("szél")) && !text.contains("bank"));
             Log.i("HUCaptionProbe", "QUALITY_SENTENCE=success; old=" + before.getJSONArray("hu") + "; new=" + after.getJSONArray("hu"));
+            evaluate(scenario, "document.querySelector('#btnSettings').click(); document.querySelector('#inputSentenceMode').checked=false; document.querySelector('#btnSaveSettings').click(); true");
+            JSONObject restored = new JSONObject(awaitQualityTranslation(scenario, 2));
+            assertEquals(before.getJSONArray("original").toString(), restored.getJSONArray("original").toString());
+            assertEquals(before.getJSONArray("hu").toString(), restored.getJSONArray("hu").toString());
+            Log.i("HUCaptionProbe", "SENTENCE_SETTING_RESTORE=success; originalRows=2; network=translation-cache");
         }
     }
 }
