@@ -24,6 +24,9 @@ jobs:
         with:
           gradle-version: '8.11.1'
           cache-disabled: true
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
       - name: JavaScript pipeline checks
         run: node --test tests/*.test.mjs
       - name: Build and check Android
@@ -79,12 +82,7 @@ jobs:
           arch: x86_64
           disable-animations: true
           working-directory: android
-          script: |
-            test_exit=0
-            gradle --no-daemon --console=plain connectedDebugAndroidTest || test_exit=$?
-            mkdir -p app/build/reports/androidTests
-            adb logcat -d -s HUCaptionProbe:I HUCaptionExtractor:W > app/build/reports/androidTests/network-probe.txt
-            exit "$test_exit"
+          script: bash run-emulator-tests.sh
       - name: Emulator test reports
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -93,3 +91,32 @@ jobs:
           path: android/app/build/reports/androidTests/
           if-no-files-found: ignore
           retention-days: 14
+  publish:
+    needs: [build, emulator]
+    if: github.ref == 'refs/heads/codex/android-caption-pipeline'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: HU-Felirat-Auto-Android
+          path: dist
+      - name: Publish directly installable Codex test APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          CODEX_SHA: ${{ github.sha }}
+        run: |
+          sha256sum -c dist/SHA256SUMS.txt
+          tag="codex-android-test2-r${{ github.run_number }}-a${{ github.run_attempt }}"
+          cat > release-notes.md <<'NOTES'
+          # HU Felirat – Codex 2.1.0-test2
+          Önálló Android-tesztváltozat: YouTube-link → időzített angol felirat → ingyenes magyar fordítás → szinkron megjelenítés. A Betöltés gomb után minden feldolgozási lépés automatikus.
+          Az APK-t közvetlenül töltsd le és telepítsd a telefonra. Az alkalmazás neve HU Felirat – Codex; a már telepített PWA és más változatok mellett is használható. API-kulcs az alapfolyamathoz nem kell.
+          Ez tesztkiadás. A GitHubon futó Android-próbák hálózata eltér a saját telefonétól. Az esetleges kihagyott hálózati próba nem bizonyít sikeres YouTube-letöltést; az Actions jelentés rögzíti az eredményt. A saját telefonos elfogadási próba szükséges.
+          Az app a YouTube-on már meglévő feliratot használja. Felirat nélküli videóból nem készít új átiratot. A YouTube a telefon hálózatát is korlátozhatja.
+          A teszt-APK debug aláírású. A forráskód és a buildleírás a kiadási taghez tartozó android/ mappában található. Az Android-modul és a NewPipeExtractor GPL-3.0-or-later licencű.
+          NOTES
+          gh release create "$tag" dist/HU-Felirat-Codex-2.1.0-test2.apk dist/SHA256SUMS.txt dist/README.md --target "$CODEX_SHA" --title "HU Felirat – Codex 2.1.0-test2" --notes-file release-notes.md --prerelease

@@ -84,8 +84,15 @@ public final class AppSmokeTest {
                       error:document.querySelector('#statusText').classList.contains('error'),
                       reason:document.querySelector('#statusText').dataset.reason,
                       cues:document.querySelectorAll('.cue-item').length,
-                      firstHu:document.querySelector('.cue-hu')?.textContent || '',
-                      firstOriginal:document.querySelector('.cue-orig')?.textContent || ''
+                      ...(() => {
+                        const spoken = [...document.querySelectorAll('.cue-item')].map(row => ({
+                          original:row.querySelector('.cue-orig')?.textContent || '',
+                          hu:row.querySelector('.cue-hu')?.textContent || ''
+                        })).filter(row => /\\p{L}{2,}[^\\p{L}]+\\p{L}{2,}[^\\p{L}]+\\p{L}{2,}/u.test(row.original));
+                        return { spoken:spoken.length,
+                          changed:spoken.filter(row => row.hu.trim().toLowerCase() !== row.original.trim().toLowerCase()).length,
+                          hungarian:spoken.filter(row => /[áéíóöőúüű]/i.test(row.hu)).length };
+                      })()
                     })
                     """);
                 JSONObject status = new JSONObject((String) new JSONTokener(raw).nextValue());
@@ -99,9 +106,11 @@ public final class AppSmokeTest {
                 }
                 if (status.getString("text").startsWith("Kész")) {
                     assertTrue("The real extraction must return timed cues", status.getInt("cues") > 1);
-                    assertFalse("The first translated cue must not be empty", status.getString("firstHu").trim().isEmpty());
-                    assertNotEquals("The real translation must change English text", status.getString("firstOriginal"), status.getString("firstHu"));
-                    Log.i("HUCaptionProbe", "OUTCOME=success; videoId=dQw4w9WgXcQ; cues=" + status.getInt("cues") + "; network=GitHub-emulator");
+                    assertTrue("The probe must include real English speech rather than only music labels", status.getInt("spoken") >= 5);
+                    assertEquals("All eligible spoken lines must change; unchanged music labels are valid", status.getInt("spoken"), status.getInt("changed"));
+                    assertTrue("Hungarian output should include Hungarian accented words", status.getInt("hungarian") > 0);
+                    Log.i("HUCaptionProbe", "OUTCOME=success; videoId=dQw4w9WgXcQ; cues=" + status.getInt("cues")
+                        + "; spoken=" + status.getInt("spoken") + "; translated=" + status.getInt("changed") + "; network=GitHub-emulator");
                     return;
                 }
                 Thread.sleep(500);
