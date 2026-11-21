@@ -93,7 +93,7 @@ jobs:
           retention-days: 14
   publish:
     needs: [build, emulator]
-    if: github.ref == 'refs/heads/codex/android-caption-pipeline'
+    if: ${{ false }} # Pause test releases while investigating missing-caption videos.
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
