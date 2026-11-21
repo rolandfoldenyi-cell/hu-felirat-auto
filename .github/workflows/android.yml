@@ -22,6 +22,10 @@ jobs:
           ref: d1be6fde11ac6e0407606b4e42fe72d34add8037
           path: android/third-party/whisper.cpp
           persist-credentials: false
+      - name: Install AAC test encoder
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
       - name: Prepare verified offline speech models
         run: python3 android/prepare-asr-assets.py
       - name: Install native Android toolchain
@@ -77,6 +81,10 @@ jobs:
           ref: d1be6fde11ac6e0407606b4e42fe72d34add8037
           path: android/third-party/whisper.cpp
           persist-credentials: false
+      - name: Install AAC test encoder
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
       - name: Prepare verified offline speech models
         run: python3 android/prepare-asr-assets.py
       - name: Install native Android toolchain
