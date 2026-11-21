@@ -1,10 +1,15 @@
 import { parseTimedSubtitles } from "/subtitle-files.js";
 import { createChromeSession, translateByPriority } from "/translation-priority.js";
+import { nativeCaptionClient } from "/native-captions.js";
+import { createTranslationCache, translateTimedCues } from "/timed-translation.js";
+import { createPlayerLayout } from "/player-layout.js";
+import { prepareSentenceCues } from "/sentence-cues.js";
 
 // HU Felirat Auto PWA — Automatic YouTube caption fetch + progressive Hungarian translation
 
 const STORAGE_SETTINGS = "hufelirat_auto_settings_v2";
 const STORAGE_HISTORY = "hufelirat_auto_history_v2";
+const translationCache = createTranslationCache();
 
 const state = {
   settings: loadSettings(),
@@ -17,6 +22,8 @@ const state = {
   deepLDisabled: false,
   tracks: [],
   cues: [], // { start, end, original, translated }
+  sourceCues: [],
+  alreadyHungarian: false,
   activeCueIndex: -1,
   ytPlayer: null,
   ytApiReady: typeof window.YT?.Player === "function",
@@ -72,6 +79,7 @@ const els = {
   btnSaveSettings: document.getElementById("btnSaveSettings"),
   inputDeepLKey: document.getElementById("inputDeepLKey"),
   inputDeepLPlan: document.getElementById("inputDeepLPlan"),
+  inputSentenceMode: document.getElementById("inputSentenceMode"),
   btnEnableChrome: document.getElementById("btnEnableChrome"),
   btnCaptionFallback: document.getElementById("btnCaptionFallback"),
   inputSupadataKey: document.getElementById("inputSupadataKey"),
@@ -86,6 +94,8 @@ const els = {
   subtitleStage: document.getElementById("subtitleStage"),
   ytPlayerHost: document.getElementById("ytPlayerHost")
 };
+const playerLayout = createPlayerLayout({ stage: els.playerStage, card: els.playerCard,
+  exitButton: els.btnExitFs, nativePort: nativeCaptionClient ? window.HUCaptionNative : null });
 
 // ---------------- Settings & History ----------------
 
@@ -94,6 +104,7 @@ function loadSettings() {
     const raw = JSON.parse(localStorage.getItem(STORAGE_SETTINGS) || "{}");
     return {
       engine: "browser_free",
+      sentenceMode: raw.sentenceMode !== false,
       deeplKey: raw.deeplKey || "",
       deeplPlan: raw.deeplPlan === "legacy_free" ? "legacy_free" : "developer",
       supadataKey: raw.supadataKey || "",
@@ -103,6 +114,7 @@ function loadSettings() {
   } catch {
     return {
       engine: "browser_free",
+      sentenceMode: true,
       deeplKey: "",
       deeplPlan: "developer",
       supadataKey: "",
@@ -195,10 +207,11 @@ function formatTime(sec) {
   return `${m}:${String(rem).padStart(2, "0")}`;
 }
 
-function setStatus(text, { loading = false, error = false } = {}) {
+function setStatus(text, { loading = false, error = false, reason = "" } = {}) {
   els.statusSpinner.hidden = !loading;
   els.statusText.textContent = text;
   els.statusText.classList.toggle("error", error);
+  els.statusText.dataset.reason = reason;
 }
 
 // Reads a JSON API response; a non-JSON body (e.g. a Vercel 404 page) becomes a readable error.
@@ -230,8 +243,12 @@ function engineLabel(engine) {
 const GT_URL = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=hu&dt=t&q=";
 
 async function googleRaw(text, signal) {
+  const url = new URL(GT_URL);
+  const language = String(state.sourceLanguage || "auto").toLowerCase().split("-")[0];
+  url.searchParams.set("sl", /^[a-z]{2,3}$/.test(language) ? language : "auto");
+  url.searchParams.set("q", text);
   for (let attempt = 0; attempt < 2; attempt++) {
-    const resp = await fetch(GT_URL + encodeURIComponent(text), { signal });
+    const resp = await fetch(url.toString(), { signal });
     if (resp.ok) {
       const data = await resp.json();
       const segments = Array.isArray(data?.[0]) ? data[0] : [];
@@ -307,7 +324,7 @@ async function translateGoogleDirect(lines, signal) {
 async function requestServerTranslation(texts, engine, signal) {
   const resp = await fetch("/api/translate", {
     method: "POST", headers: { "Content-Type": "application/json" }, signal,
-    body: JSON.stringify({ texts, engine,
+    body: JSON.stringify({ texts, engine, sourceLanguage: state.sourceLanguage,
       ...(engine === "deepl" ? {
         deeplKey: state.settings.deeplKey, deeplPlan: state.settings.deeplPlan
       } : {})
@@ -361,7 +378,7 @@ async function translateBatch(texts, activeEngine, signal) {
 
 async function restartTranslation(enableChrome = false) {
   if (!state.cues.length) return;
-  if (state.sourceLanguage.toLowerCase().startsWith("hu")) {
+  if (state.alreadyHungarian || state.sourceLanguage.toLowerCase().startsWith("hu")) {
     setStatus(`Kész — eredeti magyar felirat betöltve (${state.cues.length} sor).`);
     return;
   }
@@ -380,7 +397,8 @@ async function restartTranslation(enableChrome = false) {
       state.chromeAttempted = true;
       els.btnEnableChrome.hidden = Boolean(state.chromeSession);
     }
-    await translateAllProgressive(controller.signal, state.sourceLangName);
+    const hasMissingTranslation = state.cues.some(cue => !cue.translated || cue.translationFailed);
+    await translateAllProgressive(controller.signal, state.sourceLangName, { ignoreCache: enableChrome || !hasMissingTranslation });
   } catch (error) {
     if (error.name !== "AbortError") setStatus(error.message, { error: true });
   }
@@ -430,6 +448,7 @@ function mountOrLoadPlayer(videoId, { nativeCaptions = false, startSeconds = 0 }
     playerVars: {
       autoplay: 1,
       playsinline: 1,
+      fs: 0, // The app's fullscreen button keeps its Hungarian captions visible.
       cc_load_policy: nativeCaptions ? 1 : 0,
       cc_lang_pref: "hu",
       start: Math.max(0, Math.floor(startSeconds)),
@@ -505,7 +524,9 @@ function refreshSubtitleDisplay() {
   }
 
   els.subHu.classList.remove("placeholder");
-  els.subHu.textContent = cue.translated || cue.original;
+  els.subHu.textContent = cue.translated || (cue.translationFailed
+    ? `Eredeti felirat (fordítási hiba): ${cue.original}`
+    : `Fordítás folyamatban: ${cue.original}`);
   els.subOrig.textContent = cue.original;
   els.subOrig.hidden = !state.settings.bilingual;
 }
@@ -522,6 +543,7 @@ async function loadVideoFromInput(rawInput, preferredLang = "", allowSupadata = 
 
   state.loadEpoch++;
   showFreeOptions(videoId);
+  if (nativeCaptionClient && !allowSupadata) els.freeOptions.hidden = true;
   setNativeCaptionLayout(false);
 
   // Cancel any ongoing translation
@@ -541,6 +563,8 @@ async function loadVideoFromInput(rawInput, preferredLang = "", allowSupadata = 
   els.btnEnableChrome.hidden = true;
   state.videoId = videoId;
   state.cues = [];
+  state.sourceCues = [];
+  state.alreadyHungarian = false;
   state.activeCueIndex = -1;
   if (isNewVideo) {
     // Hide the previous video's title and track list until the new captions arrive.
@@ -558,9 +582,22 @@ async function loadVideoFromInput(rawInput, preferredLang = "", allowSupadata = 
   els.subOrig.hidden = true;
 
   mountOrLoadPlayer(videoId);
-  setStatus("Feliratsáv letöltése a YouTube-ról...", { loading: true });
+  setStatus(nativeCaptionClient && !allowSupadata
+    ? "Angol felirat lekérése a telefonon..."
+    : "Feliratsáv letöltése a YouTube-ról...", { loading: true });
 
   try {
+    let capData;
+    if (nativeCaptionClient && !allowSupadata) {
+      capData = await nativeCaptionClient.extract(videoId, {
+        lang: preferredLang || "en", signal: abortController.signal,
+        onProgress({ stage, percent }) {
+          if (abortController.signal.aborted) return;
+          setStatus(stage + (percent ? `: ${percent}%` : "..."), { loading: true });
+          els.subHu.textContent = "Magyar felirat készítése a videó hangjából...";
+        }
+      });
+    } else {
     const capResp = await fetch("/api/captions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -573,7 +610,7 @@ async function loadVideoFromInput(rawInput, preferredLang = "", allowSupadata = 
       })
     });
 
-    const capData = await readJsonResponse(capResp);
+    capData = await readJsonResponse(capResp);
     abortController.signal.throwIfAborted();
     if (!capResp.ok) {
       if (capData.details) console.warn("[captions] részletek:", capData.details);
@@ -582,17 +619,21 @@ async function loadVideoFromInput(rawInput, preferredLang = "", allowSupadata = 
       els.btnCaptionFallback.hidden = allowSupadata || !(capData.canUseFallback || state.settings.supadataKey);
       throw capErr;
     }
+    }
+    abortController.signal.throwIfAborted();
+    if (!Array.isArray(capData.cues) || !capData.cues.length) {
+      const error = new Error("A letöltő nem adott időzített feliratot ehhez a videóhoz.");
+      error.reason = "no_captions";
+      throw error;
+    }
 
     state.sourceLanguage = capData.selectedTrack?.langCode || "";
     state.sourceLangName = capData.selectedTrack?.langName || "";
     state.title = capData.title || `YouTube videó (${videoId})`;
     state.tracks = capData.tracks || [];
-    state.cues = (capData.cues || []).map((c) => ({
-      start: c.start,
-      end: c.end,
-      original: c.text,
-      translated: capData.alreadyHungarian ? c.text : null
-    }));
+    state.sourceCues = capData.cues.map(cue => ({ ...cue }));
+    state.alreadyHungarian = Boolean(capData.alreadyHungarian) || state.sourceLanguage.toLowerCase().startsWith("hu");
+    rebuildSentenceCues();
 
     els.videoMeta.hidden = false;
     els.videoTitle.textContent = state.title;
@@ -600,7 +641,7 @@ async function loadVideoFromInput(rawInput, preferredLang = "", allowSupadata = 
     addToHistory(videoId, state.title);
     renderTranscriptList();
 
-    if (capData.alreadyHungarian) {
+    if (state.alreadyHungarian) {
       setStatus(`Kész — eredeti magyar felirat betöltve (${state.cues.length} sor).`);
       refreshSubtitleDisplay();
       return;
@@ -610,18 +651,30 @@ async function loadVideoFromInput(rawInput, preferredLang = "", allowSupadata = 
     try {
       await translateAllProgressive(
         abortController.signal,
-        capData.source === "supadata" ? `${sourceLabel} (Supadata)` : sourceLabel
+        capData.source === "supadata" ? `${sourceLabel} (Supadata)`
+          : capData.source === "android" ? `${sourceLabel} (telefon)` : sourceLabel
       );
     } catch (err) {
       if (err.name === "AbortError") return;
       // The captions are loaded: keep showing them in the original language.
       setStatus(`Fordítási hiba: ${err.message || "ismeretlen hiba"}. Az eredeti felirat látszik (↻ Újra).`, {
-        error: true
+        error: true, reason: "translation_failed"
       });
       refreshSubtitleDisplay();
     }
   } catch (err) {
     if (err.name === "AbortError") return;
+    if (abortController.signal.aborted) return;
+    if (nativeCaptionClient && !allowSupadata) {
+      els.freeOptions.hidden = true;
+      els.captionNotice.textContent = "A telefonos letöltés nem sikerült. Az eredeti hiba fent látható; a kézi lehetőségek tartalékként használhatók.";
+      setStatus(err.message || "A telefonos feliratletöltés nem sikerült.", { error: true, reason: err.reason || "extractor_error" });
+      els.subHu.textContent = err.reason === "no_captions" ? "Ehhez a videóhoz nincs letölthető felirat."
+        : err.reason === "youtube_blocked" ? "A YouTube a telefonos feliratkérést is korlátozta."
+          : "A felirat lekérése nem sikerült. A részletek lent láthatók.";
+      els.subHu.classList.add("placeholder");
+      return;
+    }
     els.captionNotice.textContent = "Az automatikus letöltés nem sikerült. Az alábbi két ingyenes lehetőséggel folytathatod.";
     setStatus("A felirat letöltése nem sikerült. Válassz az ingyenes lehetőségek közül.", { error: true });
     els.subHu.textContent =
@@ -683,8 +736,9 @@ async function importSubtitleText(text, language = "", filename = "Beillesztett 
   state.sourceLangName = filename;
   state.tracks = [];
   state.activeCueIndex = -1;
-  state.cues = cues.map(cue => ({ start: cue.start, end: cue.end, original: cue.text,
-    translated: language === "hu" ? cue.text : null }));
+  state.sourceCues = cues;
+  state.alreadyHungarian = language === "hu";
+  rebuildSentenceCues();
   els.heroSection.classList.add("compact");
   els.playerCard.hidden = false;
   els.videoMeta.hidden = false;
@@ -710,6 +764,13 @@ async function importSubtitleText(text, language = "", filename = "Beillesztett 
   }
 }
 
+
+function rebuildSentenceCues(alreadyHungarian = state.alreadyHungarian) {
+  state.cues = prepareSentenceCues(state.sourceCues, { enabled: state.settings.sentenceMode && !alreadyHungarian })
+    .map(cue => ({ start: cue.start, end: cue.end, original: cue.text,
+      sourceIndices: cue.sourceIndices, translated: alreadyHungarian ? cue.text : null }));
+  state.activeCueIndex = -1;
+}
 
 function renderTrackSelector(selectedLangCode) {
   if (!state.tracks || state.tracks.length <= 1) {
@@ -762,106 +823,79 @@ function updateTranscriptRange(startIdx, endIdx) {
     const row = els.transcriptList.children[i];
     if (!row) continue;
     const huEl = row.querySelector(".cue-hu");
-    if (huEl && state.cues[i]?.translated) {
-      huEl.textContent = state.cues[i].translated;
+    if (huEl && state.cues[i]) {
+      huEl.textContent = state.cues[i].translated || `Eredeti felirat: ${state.cues[i].original}`;
     }
   }
 }
 
-async function translateAllProgressive(signal, sourceLangName) {
-  const total = state.cues.length;
-  const activeEngine = "browser_free";
-  const batchSize = 20;
-
-  const enginesUsed = new Set();
-  let failedTotal = 0;
-  let lastError = "";
+async function translateAllProgressive(signal, sourceLangName, { ignoreCache = false } = {}) {
+  const cues = state.cues;
   setStatus(
-    `Forrás: ${sourceLangName || "eredeti"}, fordítás (${engineLabel(activeEngine)})...`,
+    `Forrás: ${sourceLangName || "eredeti"}, ${state.settings.sentenceMode ? "mondatokban " : ""}magyarra fordítás...`,
     { loading: true }
   );
-
-  for (let i = 0; i < total; i += batchSize) {
-    if (signal.aborted) return;
-    const end = Math.min(i + batchSize, total);
-    const slice = state.cues.slice(i, end);
-
-    let data;
-    try {
-      data = await translateBatch(
-        slice.map((c) => c.original),
-        activeEngine,
-        signal
+  const ensureCurrent = () => {
+    signal.throwIfAborted();
+    if (state.cues !== cues) {
+      const error = new Error("Másik felirat betöltése miatt megszakítva.");
+      error.name = "AbortError";
+      throw error;
+    }
+  };
+  const result = await translateTimedCues(cues, {
+    signal, sourceLanguage: state.sourceLanguage,
+    cache: ignoreCache ? { get: () => null, set: translationCache.set, flush: translationCache.flush } : translationCache,
+    translate: texts => translateBatch(texts, "browser_free", signal),
+    onUpdate(progress) {
+      ensureCurrent();
+      for (const update of progress.updates) {
+        cues[update.index].translated = update.translated;
+        cues[update.index].translationFailed = update.translated === null;
+        updateTranscriptRange(update.index, update.index + 1);
+      }
+      refreshSubtitleDisplay();
+      if (progress.completed < progress.total) setStatus(
+        `Magyarra fordítás: ${progress.completed - progress.failed} / ${progress.total} sor kész...`, { loading: true }
       );
-    } catch (err) {
-      if (err.name === "AbortError") throw err;
-      // Keep the original text for this batch and carry on with the rest.
-      lastError = err.message || "ismeretlen hiba";
-      data = { engine: activeEngine, translations: [], failed: slice.length };
     }
-
-    for (const engine of data.engines || [data.engine]) enginesUsed.add(engine);
-    failedTotal += Number(data.failed) || 0;
-
-    const translatedArr = Array.isArray(data.translations) ? data.translations : [];
-    for (let j = 0; j < slice.length; j++) {
-      state.cues[i + j].translated = translatedArr[j] || slice[j].original;
-    }
-
-    updateTranscriptRange(i, end);
-    refreshSubtitleDisplay();
-
-    const usedLabel = engineLabel(data.engine || activeEngine);
-    if (end < total) {
-      setStatus(`Fordítás (${usedLabel}): ${end} / ${total} sor kész...`, { loading: true });
-    } else if (lastError && failedTotal >= total) {
-      throw new Error(lastError);
-    } else {
-      const suffix = enginesUsed.size > 1 ? " · több fordító" : "";
-      const done = failedTotal
-        ? `${total - failedTotal} / ${total} sor lefordítva, ${failedTotal} eredeti nyelven maradt (↻ Újra).`
-        : `${total} sor lefordítva.`;
-      setStatus(`Kész (${usedLabel}${suffix}): ${done}`, { error: failedTotal > 0 });
-    }
+  });
+  ensureCurrent();
+  if (result.failed === result.total && result.total) {
+    throw new Error(result.lastError || "Nem sikerült magyarra fordítani a feliratot.");
   }
+  const used = result.engines.length ? result.engines.map(engineLabel).join(" + ") : "helyi mentés";
+  const cached = result.cached ? ` (${result.cached} sor helyi mentésből)` : "";
+  if (result.failed) setStatus(
+    `Részben kész: ${result.translated} / ${result.total} sor magyarul; ${result.failed} sor eredeti nyelven maradt. ↻ Újra${cached}`,
+    { error: true }
+  );
+  else setStatus(`Kész (${used}): ${result.total} sor lefordítva.${cached}`);
 }
 
 // ---------------- Fullscreen ----------------
 
 async function enterFullscreen() {
-  try {
-    if (els.playerStage.requestFullscreen) {
-      await els.playerStage.requestFullscreen();
-    } else if (els.playerStage.webkitRequestFullscreen) {
-      els.playerStage.webkitRequestFullscreen();
-    }
-    if (screen.orientation && screen.orientation.lock) {
-      screen.orientation.lock("landscape").catch(() => {});
-    }
-  } catch {
-    // Some browsers disallow orientation lock without fullscreen
-  }
+  await playerLayout.enter();
 }
 
 async function exitFullscreen() {
-  try {
-    if (document.fullscreenElement) {
-      await document.exitFullscreen();
-    } else if (document.webkitFullscreenElement && document.webkitExitFullscreen) {
-      document.webkitExitFullscreen();
-    }
-  } catch {}
+  await playerLayout.exit();
 }
-
-document.addEventListener("fullscreenchange", () => {
-  const isFs = Boolean(document.fullscreenElement);
-  els.btnExitFs.hidden = !isFs;
-});
 
 // ---------------- PWA Install & Share Target ----------------
 
 function setupPwa() {
-  if ("serviceWorker" in navigator) {
+  if (nativeCaptionClient) {
+    els.badgeInstalled.hidden = false;
+    els.badgeInstalled.textContent = "Codex · 2.3.0-test1";
+    els.btnInstall.hidden = true;
+    const runtimeLabel = document.getElementById("runtimeLabel");
+    if (runtimeLabel) runtimeLabel.textContent = "ANDROID · CODEX · 2.3.0-test1";
+    const notices = document.getElementById("androidNotices");
+    if (notices) notices.hidden = false;
+  }
+  if (!nativeCaptionClient && "serviceWorker" in navigator) {
     navigator.serviceWorker.register("/sw.js").catch(() => {});
   }
 
@@ -1040,6 +1074,7 @@ function bindEvents() {
 
   // Settings Modal
   els.btnSettings.addEventListener("click", () => {
+    els.inputSentenceMode.checked = state.settings.sentenceMode;
     els.inputDeepLKey.value = state.settings.deeplKey;
     els.inputDeepLPlan.value = state.settings.deeplPlan;
     els.inputSupadataKey.value = state.settings.supadataKey;
@@ -1055,6 +1090,8 @@ function bindEvents() {
   });
 
   els.btnSaveSettings.addEventListener("click", () => {
+    const regroup = state.settings.sentenceMode !== els.inputSentenceMode.checked;
+    state.settings.sentenceMode = els.inputSentenceMode.checked;
     state.settings.engine = "browser_free";
     state.settings.deeplKey = els.inputDeepLKey.value.trim();
     state.settings.deeplPlan = els.inputDeepLPlan.value;
@@ -1062,7 +1099,16 @@ function bindEvents() {
     saveSettings();
     els.settingsModal.hidden = true;
 
-    if (state.cues.length) restartTranslation();
+    if (state.cues.length) {
+      if (regroup) {
+        state.translationAbortController?.abort();
+        rebuildSentenceCues();
+        renderTranscriptList();
+        refreshSubtitleDisplay();
+        updateActiveSubtitle(Number(state.ytPlayer?.getCurrentTime?.() || 0));
+      }
+      restartTranslation();
+    }
   });
 }
 
@@ -1071,5 +1117,6 @@ applySubtitleStyle();
 renderHistory();
 bindEvents();
 setupPwa();
+
 
 

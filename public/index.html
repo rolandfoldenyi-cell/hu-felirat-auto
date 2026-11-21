@@ -20,7 +20,7 @@
         <img src="/icons/icon-192.png" alt="HU" class="brand-icon" />
         <div class="brand-text">
           <div class="brand-title">FELIRAT AUTO</div>
-          <div class="brand-sub">MOBIL · 2.0</div>
+          <div id="runtimeLabel" class="brand-sub">MOBIL · 2.0 · v5</div>
         </div>
       </div>
 
@@ -76,7 +76,7 @@
           <div id="ytPlayerMount"></div>
         </div>
 
-        <!-- Hungarian Subtitle Area (below video in portrait, floating overlay in fullscreen) -->
+        <!-- This caption row stays below the video in landscape and fullscreen too. -->
         <div id="subtitleStage" class="subtitle-stage">
           <div id="subtitleBox" class="subtitle-box">
             <div id="subHu" class="sub-hu">Itt jelenik meg a magyar felirat.</div>
@@ -177,6 +177,9 @@
       </div>
 
       <div class="modal-body">
+        <p id="androidNotices" class="hint-text" hidden><a href="/android-notices.html">Android-verzió, forráskód és licencek</a></p>
+        <label class="field-label" for="inputSentenceMode"><input id="inputSentenceMode" type="checkbox" checked /> Természetesebb fordítás</label>
+        <p class="hint-text">Az összetartozó rövid feliratsorokat egy mondatként fordítja. A mondat az eredeti sorok időtartamában jelenik meg. Alapból bekapcsolva.</p>
         <p class="hint-text"><strong>Elsődleges: Chrome / Google — ingyenesen.</strong><br />
           Számítógépen a Chrome beépített fordítójával próbálkozunk. Telefonon ez az appoknak
           nem elérhető, ezért ott az ingyenes Google-fordítást használjuk. API-kulcs nem kell.
@@ -217,9 +220,10 @@
     </div>
   </div>
 
-  <script src="https://www.youtube.com/iframe_api"></script>
+  <script async src="https://www.youtube.com/iframe_api"></script>
   <script type="module" src="/app.js"></script>
 </body>
 </html>
+
 
 

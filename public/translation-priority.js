@@ -70,5 +70,6 @@ export async function translateByPriority(texts, {
     throw lastError || new Error("Nem sikerült lefordítani a feliratot.");
   }
   return { engine: [...used].at(-1) || "google_free", engines: [...used],
-    translations: output, failed: pending.length };
+    translations: output, failed: pending.length, failedIndices: pending };
 }
+

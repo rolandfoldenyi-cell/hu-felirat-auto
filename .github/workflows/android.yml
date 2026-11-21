@@ -1,0 +1,151 @@
+name: Android test APK
+on:
+  push:
+    branches: [codex/android-caption-pipeline]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: ggml-org/whisper.cpp
+          ref: d1be6fde11ac6e0407606b4e42fe72d34add8037
+          path: android/third-party/whisper.cpp
+          persist-credentials: false
+      - name: Install AAC test encoder
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+      - name: Prepare verified offline speech models
+        run: python3 android/prepare-asr-assets.py
+      - name: Install native Android toolchain
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" "cmake;3.22.1"'
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@017a9effdb900e5b5b2fddfb590a105619dca3c3 # v4.4.2
+        with:
+          gradle-version: '8.11.1'
+          cache-disabled: true
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      - name: JavaScript pipeline checks
+        run: node --test tests/*.test.mjs
+      - name: Build and check Android
+        working-directory: android
+        run: gradle --no-daemon --console=plain testDebugUnitTest lintDebug assembleDebug
+      - name: Name APK and record checksum
+        run: |
+          mkdir -p dist
+          cp android/app/build/outputs/apk/debug/app-debug.apk dist/HU-Felirat-Codex-2.3.0-test1.apk
+          sha256sum dist/*.apk > dist/SHA256SUMS.txt
+          cp android/README.md dist/README.md
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: HU-Felirat-Auto-Android
+          path: dist/
+          retention-days: 14
+          if-no-files-found: error
+      - name: Android check reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: Android-check-reports
+          path: |
+            android/app/build/reports/
+            android/app/build/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+  emulator:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: ggml-org/whisper.cpp
+          ref: d1be6fde11ac6e0407606b4e42fe72d34add8037
+          path: android/third-party/whisper.cpp
+          persist-credentials: false
+      - name: Install AAC test encoder
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+      - name: Prepare verified offline speech models
+        run: python3 android/prepare-asr-assets.py
+      - name: Install native Android toolchain
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" "cmake;3.22.1"'
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@017a9effdb900e5b5b2fddfb590a105619dca3c3 # v4.4.2
+        with:
+          gradle-version: '8.11.1'
+          cache-disabled: true
+      - name: Enable emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Verify rotation, caption visibility and native pipeline
+        uses: ReactiveCircus/android-emulator-runner@1dcd0090116d15e7c562f8db72807de5e036a4ed # v2.34.0
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          working-directory: android
+          script: bash run-emulator-tests.sh
+      - name: Emulator test reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: Android-emulator-reports
+          path: android/app/build/reports/androidTests/
+          if-no-files-found: ignore
+          retention-days: 14
+  publish:
+    needs: [build, emulator]
+    if: github.ref == 'refs/heads/codex/android-caption-pipeline'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: HU-Felirat-Auto-Android
+          path: dist
+      - name: Publish directly installable Codex test APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          CODEX_SHA: ${{ github.sha }}
+        run: |
+          sha256sum -c dist/SHA256SUMS.txt
+          tag="codex-android-sentences-test1-r${{ github.run_number }}-a${{ github.run_attempt }}"
+          cat > release-notes.md <<'NOTES'
+          # HU Felirat – Codex 2, 2.3.0-test1
+          Önálló Android-tesztváltozat: YouTube-link → időzített angol felirat → ingyenes magyar fordítás → szinkron megjelenítés. A Betöltés gomb után minden feldolgozási lépés automatikus.
+          Az APK-t közvetlenül töltsd le és telepítsd a telefonra. Az alkalmazás neve HU Felirat – Codex 2; a már telepített PWA és más változatok mellett is használható. API-kulcs az alapfolyamathoz nem kell.
+          Új: Természetesebb fordítás. A folytatódó rövid sorokat mondatként fordítja, majd az eredeti sorok közös időtartamában mutatja a teljes magyar mondatot. Alapból bekapcsolva, a beállításokban kikapcsolható. A forrásnyelvet külön megadja a Google-nak, és nem használja a régi töredékfordításokat. A gépi fordítás minősége továbbra is változó.
+          Ez tesztkiadás. A GitHubon futó Android-próbák hálózata eltér a saját telefonétól. Az esetleges kihagyott hálózati próba nem bizonyít sikeres YouTube-letöltést; az Actions jelentés rögzíti az eredményt. A saját telefonos elfogadási próba szükséges.
+          Az app elsőként a YouTube-feliratot kéri le. Ha nincs felirat, megpróbálja letölteni a hangsávot, és a telefonon angol beszédfelismerést futtat. A modell az APK része; nem kell hozzá API-kulcs. A BABEL hangsávjának szerverpróbáját YouTube-botellenőrzés blokkolta, ezért ezzel a konkrét videóval a telefonos próba még szükséges. A képre írt szöveget nem olvassa le. A hangfeldolgozás ebben a tesztverzióban legfeljebb 60 perces videót támogat.
+          A teszt-APK debug aláírású. A forráskód és a buildleírás a kiadási taghez tartozó android/ mappában található. Az Android-modul és a NewPipeExtractor GPL-3.0-or-later licencű.
+          NOTES
+          gh release create "$tag" dist/HU-Felirat-Codex-2.3.0-test1.apk dist/SHA256SUMS.txt dist/README.md --target "$CODEX_SHA" --title "HU Felirat – Codex 2, 2.3.0-test1" --notes-file release-notes.md --prerelease

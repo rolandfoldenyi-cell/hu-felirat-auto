@@ -1,4 +1,4 @@
-const CACHE_NAME = "hu-felirat-auto-v4";
+const CACHE_NAME = "hu-felirat-auto-v9-codex";
 const APP_SHELL = [
   "/",
   "/index.html",
@@ -6,6 +6,10 @@ const APP_SHELL = [
   "/app.js",
   "/translation-priority.js",
   "/subtitle-files.js",
+  "/native-captions.js",
+  "/timed-translation.js",
+  "/player-layout.js",
+  "/sentence-cues.js",
   "/manifest.json",
   "/icons/icon-192.png",
   "/icons/icon-512.png"
@@ -46,5 +50,6 @@ self.addEventListener("fetch", (event) => {
       .catch(() => caches.match(event.request))
   );
 });
+
 
 
