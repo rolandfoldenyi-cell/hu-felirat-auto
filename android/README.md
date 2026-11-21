@@ -1,45 +1,37 @@
-# HU Felirat Auto – Codex önálló Android-változata
+# HU Felirat – Codex 2 (2.2.0-test1)
 
-Ez az app a telefon saját hálózatáról kéri le a YouTube-on már meglévő feliratot a NewPipeExtractor 0.27.1 könyvtárral. A meglévő webes felületet csomagolja az APK-ba. A kinyert WebVTT időzítéseit helyben olvassa be, majd a meglévő ingyenes Chrome/Google fordítási lánc végzi a magyar fordítást.
+Önálló, teljesen automatikus Android-tesztváltozat. A YouTube-link betöltése után az app először a meglévő angol feliratot kéri le. Ha a videóhoz nincs feliratsáv, automatikusan megpróbálja letölteni a hangsávot, és a telefonon futó Whisperrel időzített angol szöveget készít. Ezt a meglévő ingyenes fordítási lánc magyarra fordítja, majd a lejátszó az időzítések alapján jeleníti meg.
 
-A telefonon elég a linket bemásolni és a Betöltés gombra nyomni. Az angol felirat letöltése, az időzítések beolvasása, a magyar fordítás és a lejátszóhoz párosítás automatikusan indul, ugyanazon az alkalmazáson belül. Ezután csak a videó lejátszását kell elindítani. Ez nem hangfelismerő: felirat nélküli videóhoz nem állít elő új átiratot.
+A feldolgozás az appon belül marad; nem kell kézzel másolni vagy feliratfájlt kezelni. A modell az APK része, az alapfolyamathoz nincs szükség fiókra, mikrofonengedélyre vagy API-kulcsra. A hangot nem küldjük felhős beszédfelismerőnek. A felismert szöveg fordítása a támogatott Chrome-fordítóval, illetve az ingyenes Google-lánccal történik; a korábban külön megadott DeepL-kulcs opcionális.
 
-Ez a Codex saját, teljes változata. A telepített neve **HU Felirat – Codex**, az alkalmazásazonosítója `hu.feliratauto.codex`. Önállóan telepíthető és külön tárolja az adatokat, így összehasonlítható más fejlesztő változatával. Nem igényli Claude kódját vagy szolgáltatását.
+## Használat és korlátok
 
-## Állapot és ellenőrzés
+1. Telepítsd és indítsd el a **HU Felirat – Codex 2** alkalmazást.
+2. Másold be a YouTube-linket és indítsd a betöltést.
+3. Várd meg a kész állapotot. Felirat nélküli videónál a hangsáv feldolgozása hosszabb ideig tarthat; a felület jelzi az aktuális lépést.
+4. Indítsd el a videót. Az angol és a magyar szöveg ugyanahhoz az időzítéshez tartozik.
 
-Fejlesztői tesztváltozat, nem igazolt végleges megoldás. A 29 JavaScript-ellenőrzés a teljes frontend-folyamatot szimulált hálózati válaszokkal is vizsgálja. Az Android unit tesztek a nyelvválasztást és a letöltési címek korlátozását ellenőrzik. Az emulátoros teszt az alkalmazás indítását, a natív üzenetkapcsolatot és a keretek közötti elkülönítést ellenőrzi. Külön, valódi YouTube/fordító hálózati próba is fut: ennek blokkolt vagy kihagyott eredménye nem jelent sikeres feliratletöltést.
+A beszédfelismerés angol hangra készült, automatikus eredménye hibákat tartalmazhat. Ebben a tesztverzióban legfeljebb 60 perces videót és 128 MiB letölthető hangot dolgoz fel. A képkockákra írt, nem kimondott szöveget nem ismeri fel. Ha a YouTube a hangsáv letöltését is megtiltja, a folyamat hozzáférési hibával leáll. A BABEL (RecF4T7KquQ) felirata a YouTube saját lejátszójában sem érhető el; az erről indított szerveres hangpróbát botellenőrzés blokkolta. A konkrét videóval a saját telefonos próba szükséges.
 
-A GitHub emulátor hálózata eltér Roland telefonjának hálózatától. A saját telefonon is szükséges a próba. A telefon hálózatát is blokkolhatja a YouTube; ezt külön hibaüzenet jelzi. Nincs automatikus Supadata-hívás vagy fizetős AI.
+A korábbi Codex-app mellé is telepíthető: ennek a változatnak a csomagazonosítója hu.feliratauto.codexspeech. A modell körülbelül 33 MB, ezért az APK a korábbi verziónál nagyobb. A teszt-APK debug aláírású; későbbi tesztkiadásoknál újratelepítésre lehet szükség.
 
-Az app verziója: 2.1.0-test2. A telepített PWA ettől külön alkalmazás; a **HU Felirat – Codex** ikonról kell megnyitni az új tesztváltozatot.
+## Forrás és build
 
-## Build
+JDK 17, Gradle 8.11.1, Android SDK 35, NDK 27.0.12077973 és CMake 3.22.1 szükséges. A GitHub Actions a pontosan rögzített whisper.cpp d1be6fde11ac6e0407606b4e42fe72d34add8037 commitot használja. A modell-manifest a letöltési helyeket, méreteket és SHA-256 értékeket tartalmazza; minden modell ellenőrzés után kerül az APK-ba.
 
-JDK 17, Gradle 8.11.1, Android SDK 35 szükséges. Az Android Gradle Plugin 8.9.2. A GitHub Actions munkafolyamat ezeket a megfelelő Ubuntu runneren használja, majd feltölti az APK-t és az ellenőrzések jelentéseit.
+A whisper.cpp forrásának az android/third-party/whisper.cpp mappában kell lennie. Ezután a repository gyökeréből:
 
 ```sh
+python3 android/prepare-asr-assets.py
 node --test tests/*.test.mjs
 cd android
 gradle testDebugUnitTest lintDebug assembleDebug
 ```
 
-APK: `android/app/build/outputs/apk/debug/app-debug.apk`. GitHub Actions: a repository Actions lapján az „Android test APK” futás `HU-Felirat-Auto-Android` melléklete tartalmazza. A checksum ugyanott `SHA256SUMS.txt` néven található.
+Az előkészítőhöz ffmpeg szükséges a nyílt JFK hangminta AAC-tesztváltozatának elkészítéséhez. A modellfájlok és a harmadik fél forrása nem kerül a gitbe. Az Actions végzi az Android-emulátoros ellenőrzést, majd sikeres futás után közzéteszi az APK-t és az ellenőrzőösszeget. A szerver által blokkolt élő hálózati próba kihagyását nem tekintjük sikeres YouTube-letöltésnek.
 
-A teszt-APK a buildkörnyezet debug kulcsával készül. Másik buildből származó tesztváltozat frissítésénél újratelepítésre lehet szükség; a stabil, saját kulccsal aláírt kiadás külön kiadási lépés.
+## Adatkezelés és licencek
 
-## Valós telefonos próba
+Csak INTERNET engedély szükséges. A natív képességhez kizárólag a saját appoldal fő kerete fér hozzá; a YouTube iframe nem. A letöltő nem használ YouTube-fiókot vagy személyes cookie-t. Az ideiglenes hangfájlokat a feldolgozás végén törli. A kész angol átirat legfeljebb hét napig az app saját gyorsítótárában maradhat; a sikeres fordítások legfeljebb 30 napig, korlátozott méretben tárolódnak.
 
-1. Telepítsd és nyisd meg a **HU Felirat – Codex** alkalmazást. Ellenőrizd az `ANDROID · CODEX · 2.1.0-test2` feliratot.
-2. Másolj be egy ismerten angol feliratos videólinket. Ne adj meg API-kulcsot.
-3. Ellenőrizd a telefonos letöltés, a magyar fordítás és a kész állapot megjelenését.
-4. Indítsd el a videót, tekerj előre és vissza. A magyar feliratnak a beszéd időzítését kell követnie.
-5. Ismételd meg automatikus angol feliratos videóval. Rögzítsd a linket, a telefon típusát, az Android/WebView verzióját és a hibaszöveget, ha van.
-
-## Hozzáférések és licencek
-
-Csak INTERNET engedély szükséges. A natív feliratkinyerőhöz kizárólag a saját HTTPS appoldal fő kerete fér hozzá; a YouTube iframe nem. A letöltő nem használ WebView-cookie-kat vagy YouTube-fiókot, csak engedélyezett HTTPS YouTube/Google végpontokat kér le. A statikus appfájlok az APK-ból érkeznek, a meglévő opcionális `/api/translate` háttérszolgáltatás a helyes Vercel-domainen marad.
-
-A NewPipeExtractor és az új Android-modul GPL-3.0-or-later licencű. A licenc szövege az `android/LICENSE` fájlban található. Az appal átadott forrás és a buildleírás elérhető ugyanabban a repositoryban a `codex/android-caption-pipeline` ágon. A meglévő frontend szerzői jogi jelöléseit megőrizzük. Az Android-kiadás további terjesztésekor a függőségek és az összekapcsolt alkalmazás licencfeltételeit is meg kell őrizni.
-
-Upstream: https://github.com/TeamNewPipe/NewPipeExtractor/tree/v0.27.1
+Az Android-modul és a NewPipeExtractor GPL-3.0-or-later licencű. A Whisper.cpp, a Whisper-modellek és a Silero VAD licencei a licenses mappában, valamint az APK tájékoztatójában találhatók. A forrás és az összeállítás leírása ugyanebben a repositoryban érhető el.

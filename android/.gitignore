@@ -3,3 +3,7 @@
 local.properties
 *.jks
 *.keystore
+third-party/
+model-assets/
+**/.cxx/
+app/src/androidTest/assets/*.m4a

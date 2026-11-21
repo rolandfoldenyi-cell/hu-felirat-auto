@@ -11,11 +11,21 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: ggml-org/whisper.cpp
+          ref: d1be6fde11ac6e0407606b4e42fe72d34add8037
+          path: android/third-party/whisper.cpp
+          persist-credentials: false
+      - name: Prepare verified offline speech models
+        run: python3 android/prepare-asr-assets.py
+      - name: Install native Android toolchain
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" "cmake;3.22.1"'
       - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
         with:
           distribution: temurin
@@ -35,7 +45,7 @@ jobs:
       - name: Name APK and record checksum
         run: |
           mkdir -p dist
-          cp android/app/build/outputs/apk/debug/app-debug.apk dist/HU-Felirat-Codex-2.1.0-test2.apk
+          cp android/app/build/outputs/apk/debug/app-debug.apk dist/HU-Felirat-Codex-2.2.0-test1.apk
           sha256sum dist/*.apk > dist/SHA256SUMS.txt
           cp android/README.md dist/README.md
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -56,11 +66,21 @@ jobs:
           retention-days: 14
   emulator:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: ggml-org/whisper.cpp
+          ref: d1be6fde11ac6e0407606b4e42fe72d34add8037
+          path: android/third-party/whisper.cpp
+          persist-credentials: false
+      - name: Prepare verified offline speech models
+        run: python3 android/prepare-asr-assets.py
+      - name: Install native Android toolchain
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" "cmake;3.22.1"'
       - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
         with:
           distribution: temurin
@@ -93,7 +113,7 @@ jobs:
           retention-days: 14
   publish:
     needs: [build, emulator]
-    if: ${{ false }} # Pause test releases while investigating missing-caption videos.
+    if: github.ref == 'refs/heads/codex/android-caption-pipeline'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -110,13 +130,13 @@ jobs:
           CODEX_SHA: ${{ github.sha }}
         run: |
           sha256sum -c dist/SHA256SUMS.txt
-          tag="codex-android-test2-r${{ github.run_number }}-a${{ github.run_attempt }}"
+          tag="codex-android-speech-test1-r${{ github.run_number }}-a${{ github.run_attempt }}"
           cat > release-notes.md <<'NOTES'
-          # HU Felirat – Codex 2.1.0-test2
+          # HU Felirat – Codex 2, 2.2.0-test1
           Önálló Android-tesztváltozat: YouTube-link → időzített angol felirat → ingyenes magyar fordítás → szinkron megjelenítés. A Betöltés gomb után minden feldolgozási lépés automatikus.
-          Az APK-t közvetlenül töltsd le és telepítsd a telefonra. Az alkalmazás neve HU Felirat – Codex; a már telepített PWA és más változatok mellett is használható. API-kulcs az alapfolyamathoz nem kell.
+          Az APK-t közvetlenül töltsd le és telepítsd a telefonra. Az alkalmazás neve HU Felirat – Codex 2; a már telepített PWA és más változatok mellett is használható. API-kulcs az alapfolyamathoz nem kell.
           Ez tesztkiadás. A GitHubon futó Android-próbák hálózata eltér a saját telefonétól. Az esetleges kihagyott hálózati próba nem bizonyít sikeres YouTube-letöltést; az Actions jelentés rögzíti az eredményt. A saját telefonos elfogadási próba szükséges.
-          Az app a YouTube-on már meglévő feliratot használja. Felirat nélküli videóból nem készít új átiratot. A YouTube a telefon hálózatát is korlátozhatja.
+          Az app elsőként a YouTube-feliratot kéri le. Ha nincs felirat, megpróbálja letölteni a hangsávot, és a telefonon angol beszédfelismerést futtat. A modell az APK része; nem kell hozzá API-kulcs. A BABEL hangsávjának szerverpróbáját YouTube-botellenőrzés blokkolta, ezért ezzel a konkrét videóval a telefonos próba még szükséges. A képre írt szöveget nem olvassa le. A hangfeldolgozás ebben a tesztverzióban legfeljebb 60 perces videót támogat.
           A teszt-APK debug aláírású. A forráskód és a buildleírás a kiadási taghez tartozó android/ mappában található. Az Android-modul és a NewPipeExtractor GPL-3.0-or-later licencű.
           NOTES
-          gh release create "$tag" dist/HU-Felirat-Codex-2.1.0-test2.apk dist/SHA256SUMS.txt dist/README.md --target "$CODEX_SHA" --title "HU Felirat – Codex 2.1.0-test2" --notes-file release-notes.md --prerelease
+          gh release create "$tag" dist/HU-Felirat-Codex-2.2.0-test1.apk dist/SHA256SUMS.txt dist/README.md --target "$CODEX_SHA" --title "HU Felirat – Codex 2, 2.2.0-test1" --notes-file release-notes.md --prerelease

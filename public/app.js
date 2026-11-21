@@ -574,7 +574,12 @@ async function loadVideoFromInput(rawInput, preferredLang = "", allowSupadata = 
     let capData;
     if (nativeCaptionClient && !allowSupadata) {
       capData = await nativeCaptionClient.extract(videoId, {
-        lang: preferredLang || "en", signal: abortController.signal
+        lang: preferredLang || "en", signal: abortController.signal,
+        onProgress({ stage, percent }) {
+          if (abortController.signal.aborted) return;
+          setStatus(stage + (percent ? `: ${percent}%` : "..."), { loading: true });
+          els.subHu.textContent = "Magyar felirat készítése a videó hangjából...";
+        }
       });
     } else {
     const capResp = await fetch("/api/captions", {
@@ -648,7 +653,7 @@ async function loadVideoFromInput(rawInput, preferredLang = "", allowSupadata = 
     if (err.name === "AbortError") return;
     if (abortController.signal.aborted) return;
     if (nativeCaptionClient && !allowSupadata) {
-      els.freeOptions.hidden = false;
+      els.freeOptions.hidden = true;
       els.captionNotice.textContent = "A telefonos letöltés nem sikerült. Az eredeti hiba fent látható; a kézi lehetőségek tartalékként használhatók.";
       setStatus(err.message || "A telefonos feliratletöltés nem sikerült.", { error: true, reason: err.reason || "extractor_error" });
       els.subHu.textContent = err.reason === "no_captions" ? "Ehhez a videóhoz nincs letölthető felirat."
@@ -884,10 +889,10 @@ document.addEventListener("fullscreenchange", () => {
 function setupPwa() {
   if (nativeCaptionClient) {
     els.badgeInstalled.hidden = false;
-    els.badgeInstalled.textContent = "Codex · 2.1.0-test2";
+    els.badgeInstalled.textContent = "Codex · 2.2.0-test1";
     els.btnInstall.hidden = true;
     const runtimeLabel = document.getElementById("runtimeLabel");
-    if (runtimeLabel) runtimeLabel.textContent = "ANDROID · CODEX · 2.1.0-test2";
+    if (runtimeLabel) runtimeLabel.textContent = "ANDROID · CODEX · 2.2.0-test1";
     const notices = document.getElementById("androidNotices");
     if (notices) notices.hidden = false;
   }

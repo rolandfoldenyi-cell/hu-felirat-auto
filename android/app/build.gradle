@@ -3,13 +3,16 @@ plugins { id 'com.android.application' }
 android {
     namespace 'hu.feliratauto.android'
     compileSdk 35
+    ndkVersion '27.0.12077973'
     defaultConfig {
-        applicationId 'hu.feliratauto.codex'
+        applicationId 'hu.feliratauto.codexspeech'
         minSdk 26
         targetSdk 35
-        versionCode 21002
-        versionName '2.1.0-test2'
+        versionCode 22001
+        versionName '2.2.0-test1'
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+        ndk { abiFilters 'arm64-v8a', 'x86_64' }
+        externalNativeBuild { cmake { arguments '-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON' } }
     }
     buildFeatures { buildConfig true }
     compileOptions {
@@ -17,7 +20,9 @@ android {
         targetCompatibility JavaVersion.VERSION_17
         coreLibraryDesugaringEnabled true
     }
-    sourceSets { main { assets.srcDir layout.buildDirectory.dir('web-assets') } }
+    sourceSets { main { assets.srcDir layout.buildDirectory.dir('web-assets'); assets.srcDir rootProject.file('model-assets') } }
+    externalNativeBuild { cmake { path file('src/main/cpp/CMakeLists.txt'); version '3.22.1' } }
+    androidResources { noCompress += ['bin'] }
     buildTypes { release { minifyEnabled false } }
     packaging { resources.excludes += ['META-INF/DEPENDENCIES', 'META-INF/LICENSE*', 'META-INF/NOTICE*'] }
 }
@@ -25,10 +30,20 @@ android {
 tasks.register('syncWebAssets', Sync) {
     from(rootProject.file('../public'))
     from(rootProject.file('LICENSE')) { into 'licenses'; rename { 'GPL-3.0.txt' } }
+    from(rootProject.file('licenses')) { into 'licenses' }
     into(layout.buildDirectory.dir('web-assets/site'))
     exclude 'icons/*.js', 'icons/*.html', 'icons/*.css', 'icons/manifest.json'
 }
-tasks.named('preBuild').configure { dependsOn('syncWebAssets') }
+tasks.register('checkSpeechModels') {
+    doLast {
+        def manifest = new groovy.json.JsonSlurper().parse(rootProject.file('model-manifest.json'))
+        manifest.models.each { model ->
+            def asset = rootProject.file('model-assets/models/' + model.file)
+            if (!asset.isFile() || asset.length() != (model.bytes as long)) throw new GradleException('Run python3 android/prepare-asr-assets.py before building: missing ' + model.file)
+        }
+    }
+}
+tasks.named('preBuild').configure { dependsOn('syncWebAssets', 'checkSpeechModels') }
 
 dependencies {
     implementation 'androidx.webkit:webkit:1.12.1'

@@ -37,7 +37,7 @@ public final class MainActivity extends Activity {
     private static final String ORIGIN = "https://" + HOST;
     private static final Set<String> ASSETS = Set.of("index.html", "app.js", "styles.css", "manifest.json",
         "subtitle-files.js", "translation-priority.js", "native-captions.js", "timed-translation.js", "android-notices.html",
-        "icons/icon-192.png", "icons/icon-512.png", "icons/icon-maskable-512.png", "licenses/GPL-3.0.txt");
+        "icons/icon-192.png", "icons/icon-512.png", "icons/icon-maskable-512.png", "licenses/GPL-3.0.txt", "licenses/whisper-MIT.txt", "licenses/Whisper-models-MIT.txt", "licenses/Silero-VAD-MIT.txt");
     private final ThreadPoolExecutor executor = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.SECONDS, new ArrayBlockingQueue<>(1));
     private CaptionExtractor extractor;
     private Future<?> extraction;
@@ -65,7 +65,7 @@ public final class MainActivity extends Activity {
                 .setPositiveButton("Rendben", (dialog, which) -> finish()).setCancelable(false).show();
             return;
         }
-        extractor = new CaptionExtractor();
+        extractor = new CaptionExtractor(this);
         webView = new WebView(this);
         webView.setId(R.id.browser);
         root.addView(webView, new FrameLayout.LayoutParams(-1, -1));
@@ -149,7 +149,11 @@ public final class MainActivity extends Activity {
                 int epoch = pageEpoch;
                 extraction = executor.submit(() -> {
                     JSONObject result;
-                    try { result = new JSONObject().put("id", id).put("ok", true).put("data", extractor.extract(videoId, lang)); }
+                    try { result = new JSONObject().put("id", id).put("ok", true).put("data", extractor.extract(videoId, lang, (stage, percent) -> runOnUiThread(() -> {
+                        if (!isDestroyed() && epoch == pageEpoch && activeId.equals(id)) try {
+                            reply.postMessage(new JSONObject().put("id", id).put("type", "progress").put("stage", stage).put("percent", percent).toString());
+                        } catch (Exception ignored) {}
+                    }))); }
                     catch (Exception error) { result = failure(id, error); }
                     final String json = result.toString();
                     runOnUiThread(() -> {
@@ -193,6 +197,7 @@ public final class MainActivity extends Activity {
     }
 
     private void cancelExtraction() {
+        LocalSpeech.cancel();
         activeId = "";
         if (extraction != null) extraction.cancel(true);
         executor.getQueue().clear();

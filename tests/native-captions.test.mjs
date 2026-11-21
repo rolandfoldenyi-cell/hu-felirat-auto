@@ -14,6 +14,16 @@ function bridge() {
 
 test('ordinary PWA has no native caption port', () => assert.equal(nativeCaptionClient, null));
 
+test('speech-recognition progress updates do not finish or corrupt a pending extraction', async () => {
+  const b = bridge(); const client = createNativeCaptionClient(b.port);
+  const updates=[];
+  const result=client.extract(videoId,{onProgress:message=>updates.push(message)});
+  b.reply({id:'1',type:'progress',stage:'Angol beszéd felismerése',percent:50});
+  assert.equal(updates.length,1);assert.equal(updates[0].percent,50);
+  b.reply({id:'1',ok:true,data:{...payload,source:'android_asr'}});
+  assert.equal((await result).cues[0].start,1.25);
+});
+
 test('device VTT retains original cue timestamps and text', async () => {
   const b = bridge(); const client = createNativeCaptionClient(b.port);
   const result = client.extract(videoId);

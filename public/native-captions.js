@@ -2,7 +2,7 @@ import { parseTimedSubtitles } from './subtitle-files.js';
 
 // Only the Android app's top-level trusted origin receives this message port.
 // A YouTube iframe never receives a native interface.
-export function createNativeCaptionClient(port, { timeoutMs = 90000 } = {}) {
+export function createNativeCaptionClient(port, { timeoutMs = 20 * 60 * 1000 } = {}) {
   const pending = new Map();
   let sequence = 0;
   port.onmessage = (event) => {
@@ -10,6 +10,7 @@ export function createNativeCaptionClient(port, { timeoutMs = 90000 } = {}) {
     try { message = JSON.parse(event.data); } catch { return; }
     const job = pending.get(message.id);
     if (!job) return;
+    if (message.type === 'progress') { job.onProgress?.(message); return; }
     if (!message.ok) {
       const error = new Error(message.error || 'A telefonos feliratletöltés nem sikerült.');
       error.reason = message.reason || 'extractor_error';
@@ -29,7 +30,7 @@ export function createNativeCaptionClient(port, { timeoutMs = 90000 } = {}) {
     } catch (error) { job.finish(error); }
   };
   return {
-    extract(videoId, { lang = 'en', signal } = {}) {
+    extract(videoId, { lang = 'en', signal, onProgress } = {}) {
       signal?.throwIfAborted();
       if (!/^[A-Za-z0-9_-]{11}$/.test(videoId)) return Promise.reject(new Error('Érvénytelen videóazonosító.'));
       const id = String(++sequence);
@@ -48,7 +49,7 @@ export function createNativeCaptionClient(port, { timeoutMs = 90000 } = {}) {
           error.reason = 'timeout';
           finish(error);
         }, timeoutMs);
-        pending.set(id, { videoId, finish });
+        pending.set(id, { videoId, finish, onProgress });
         signal?.addEventListener('abort', onAbort, { once: true });
         try { port.postMessage(JSON.stringify({ type: 'extract', id, videoId, lang })); }
         catch (error) { finish(error); }
