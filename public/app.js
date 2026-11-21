@@ -523,6 +523,7 @@ async function loadVideoFromInput(rawInput, preferredLang = "", allowSupadata = 
 
   state.loadEpoch++;
   showFreeOptions(videoId);
+  if (nativeCaptionClient && !allowSupadata) els.freeOptions.hidden = true;
   setNativeCaptionLayout(false);
 
   // Cancel any ongoing translation
@@ -641,6 +642,7 @@ async function loadVideoFromInput(rawInput, preferredLang = "", allowSupadata = 
     if (err.name === "AbortError") return;
     if (abortController.signal.aborted) return;
     if (nativeCaptionClient && !allowSupadata) {
+      els.freeOptions.hidden = false;
       els.captionNotice.textContent = "A telefonos letöltés nem sikerült. Az eredeti hiba fent látható; a kézi lehetőségek tartalékként használhatók.";
       setStatus(err.message || "A telefonos feliratletöltés nem sikerült.", { error: true });
       els.subHu.textContent = err.reason === "no_captions" ? "Ehhez a videóhoz nincs letölthető felirat."

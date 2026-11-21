@@ -4,7 +4,10 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        maven { url 'https://jitpack.io'; content { includeGroup 'com.github.teamnewpipe' } }
+        maven {
+            url 'https://jitpack.io'
+            content { includeGroup 'com.github.teamnewpipe'; includeGroup 'com.github.TeamNewPipe' }
+        }
     }
 }
 rootProject.name = 'HUFeliratAuto'
