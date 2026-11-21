@@ -1,4 +1,4 @@
-# HU Felirat – Codex 2 (2.2.0-test2)
+# HU Felirat – Codex 2 (2.2.0-test3)
 
 Önálló, teljesen automatikus Android-tesztváltozat. A YouTube-link betöltése után az app először a meglévő angol feliratot kéri le. Ha a videóhoz nincs feliratsáv, automatikusan megpróbálja letölteni a hangsávot, és a telefonon futó Whisperrel időzített angol szöveget készít. Ezt a meglévő ingyenes fordítási lánc magyarra fordítja, majd a lejátszó az időzítések alapján jeleníti meg.
 
@@ -6,7 +6,7 @@ A feldolgozás az appon belül marad; nem kell kézzel másolni vagy feliratfáj
 
 ## Fekvő és teljes képernyős nézet
 
-A videó és a magyar felirat egy közös nézetben marad. Fekvő telefonon automatikusan kibővül a lejátszó; a felirat a videó alatt külön sávot kap. Az app ⛶ gombja ugyanezt a nézetet nyitja meg. A Kilépés gomb és az Android Vissza gomb visszavisz a normál felületre. Forgatáskor nem töltjük újra az oldalt vagy a videót. A YouTube külön, csak a videót mutató teljesképernyő-gombja helyett az app gombját használjuk.
+A videó és a magyar felirat egy közös nézetben marad. Teljes képernyőn az Android-konténer nem ad külön bal vagy alsó térközt, és a webes lejátszó sem tolja el a videót a kamerakivágás miatt. A kép a teljes ablak közepére igazodik; a felirat szövege és a kilépőgomb kap védőtérközt. A normál nézetben az Android egyszer alkalmazza és elfogyasztja az inseteket. Fekvő telefonon automatikusan kibővül a lejátszó; a felirat a videó alatt külön sávot kap. Az app ⛶ gombja ugyanezt a nézetet nyitja meg. A Kilépés gomb és az Android Vissza gomb visszavisz a normál felületre. Forgatáskor nem töltjük újra az oldalt vagy a videót. A YouTube külön, csak a videót mutató teljesképernyő-gombja helyett az app gombját használjuk.
 
 ## Használat és korlátok
 

@@ -19,6 +19,11 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
 import androidx.webkit.JavaScriptReplyProxy;
 import androidx.webkit.WebViewAssetLoader;
 import androidx.webkit.WebViewCompat;
@@ -52,18 +57,24 @@ public final class MainActivity extends Activity {
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
+        getWindow().setStatusBarColor(Color.TRANSPARENT);
+        getWindow().setNavigationBarColor(Color.TRANSPARENT);
+        if (android.os.Build.VERSION.SDK_INT >= 28) {
+            var attributes = getWindow().getAttributes();
+            attributes.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+            getWindow().setAttributes(attributes);
+        }
+        if (android.os.Build.VERSION.SDK_INT >= 29) getWindow().setNavigationBarContrastEnforced(false);
         root = new FrameLayout(this);
         root.setBackgroundColor(Color.rgb(10, 18, 24));
-        root.setOnApplyWindowInsetsListener((view, insets) -> {
-            int left = insets.getSystemWindowInsetLeft(), top = insets.getSystemWindowInsetTop();
-            int right = insets.getSystemWindowInsetRight(), bottom = insets.getSystemWindowInsetBottom();
-            if (android.os.Build.VERSION.SDK_INT >= 28 && insets.getDisplayCutout() != null) {
-                var cutout = insets.getDisplayCutout();
-                left = Math.max(left, cutout.getSafeInsetLeft()); top = Math.max(top, cutout.getSafeInsetTop());
-                right = Math.max(right, cutout.getSafeInsetRight()); bottom = Math.max(bottom, cutout.getSafeInsetBottom());
-            }
-            view.setPadding(left, top, right, bottom);
-            return insets;
+        ViewCompat.setOnApplyWindowInsetsListener(root, (view, insets) -> {
+            // In player mode the WebView fills the window. Only text/buttons use safe areas.
+            // In normal mode the native container owns these insets and consumes them once.
+            Insets safe = playerExpanded ? Insets.NONE
+                : insets.getInsets(WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout());
+            view.setPadding(safe.left, safe.top, safe.right, safe.bottom);
+            return playerExpanded ? insets : WindowInsetsCompat.CONSUMED;
         });
         setContentView(root);
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
@@ -229,16 +240,9 @@ public final class MainActivity extends Activity {
     private void setPlayerLayout(boolean expanded, boolean lockLandscape) {
         if (playerExpanded != expanded) {
             playerExpanded = expanded;
-            if (expanded) {
-                getWindow().addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
-                getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                    | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                    | View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
-            } else {
-                getWindow().clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
-                getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
-            }
-            root.requestApplyInsets();
+            root.setBackgroundColor(expanded ? Color.BLACK : Color.rgb(10, 18, 24));
+            applyPlayerWindow();
+            ViewCompat.requestApplyInsets(root);
         }
         boolean lock = expanded && lockLandscape;
         if (playerOrientationLocked != lock) {
@@ -246,13 +250,21 @@ public final class MainActivity extends Activity {
             setRequestedOrientation(lock ? ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE : ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
         }
     }
+    private void applyPlayerWindow() {
+        WindowInsetsControllerCompat bars = WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView());
+        bars.setAppearanceLightStatusBars(false);
+        bars.setAppearanceLightNavigationBars(false);
+        bars.setSystemBarsBehavior(WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+        if (playerExpanded) bars.hide(WindowInsetsCompat.Type.systemBars());
+        else bars.show(WindowInsetsCompat.Type.systemBars());
+    }
     @Override public void onBackPressed() {
         if (playerExpanded) webView.evaluateJavascript("window.dispatchEvent(new Event('hu-exit-player'))", null);
         else if (webView != null && webView.canGoBack()) webView.goBack();
         else super.onBackPressed();
     }
     @Override protected void onPause() { if (webView != null) webView.onPause(); super.onPause(); }
-    @Override protected void onResume() { super.onResume(); if (webView != null) webView.onResume(); }
+    @Override protected void onResume() { super.onResume(); if (webView != null) { webView.onResume(); applyPlayerWindow(); } }
     @Override protected void onDestroy() {
         cancelExtraction(); executor.shutdownNow();
         if (fileCallback != null) fileCallback.onReceiveValue(null);

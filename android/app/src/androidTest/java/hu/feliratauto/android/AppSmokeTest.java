@@ -41,7 +41,7 @@ public final class AppSmokeTest {
         try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
             awaitTrue(scenario, "Boolean(document.querySelector('#urlInput') && document.querySelector('#runtimeLabel')?.textContent.includes('ANDROID'))");
             assertEquals("true", evaluate(scenario, "typeof HUCaptionNative.postMessage === 'function'"));
-            assertEquals("true", evaluate(scenario, "document.querySelector('#badgeInstalled').textContent.includes('2.2.0-test2')"));
+            assertEquals("true", evaluate(scenario, "document.querySelector('#badgeInstalled').textContent.includes('2.2.0-test3')"));
             evaluate(scenario, """
                 (() => {
                   const previous = HUCaptionNative.onmessage;

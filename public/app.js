@@ -871,10 +871,10 @@ async function exitFullscreen() {
 function setupPwa() {
   if (nativeCaptionClient) {
     els.badgeInstalled.hidden = false;
-    els.badgeInstalled.textContent = "Codex · 2.2.0-test2";
+    els.badgeInstalled.textContent = "Codex · 2.2.0-test3";
     els.btnInstall.hidden = true;
     const runtimeLabel = document.getElementById("runtimeLabel");
-    if (runtimeLabel) runtimeLabel.textContent = "ANDROID · CODEX · 2.2.0-test2";
+    if (runtimeLabel) runtimeLabel.textContent = "ANDROID · CODEX · 2.2.0-test3";
     const notices = document.getElementById("androidNotices");
     if (notices) notices.hidden = false;
   }
